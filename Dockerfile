@@ -28,6 +28,14 @@ RUN apt-get update \
         fonts-inter \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
+        libfontconfig1 \
+        libfreetype6 \
+        libgl1 \
+        libx11-6 \
+        libxext6 \
+        libxi6 \
+        libxrender1 \
+        libxtst6 \
         tzdata \
     && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo Asia/Shanghai > /etc/timezone \

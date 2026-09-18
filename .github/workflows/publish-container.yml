@@ -73,6 +73,63 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Build smoke-test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: open-snapshot:smoke
+          cache-from: type=gha
+          platforms: linux/amd64
+          secrets: |
+            gpr_user=${{ env.GPR_USER }}
+            gpr_key=${{ env.GPR_KEY }}
+
+      - name: Smoke test container rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          container_name="open-snapshot-smoke"
+          docker run --detach \
+            --name "$container_name" \
+            --publish 127.0.0.1:18080:8080 \
+            open-snapshot:smoke
+
+          cleanup() {
+            docker logs "$container_name" || true
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/health; then
+              ready=true
+              break
+            fi
+            if ! docker inspect --format '{{.State.Running}}' "$container_name" | grep --quiet '^true$'; then
+              echo "Container exited before becoming ready"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [[ "$ready" != "true" ]]; then
+            echo "Container did not become ready in time"
+            exit 1
+          fi
+
+          curl --fail --silent --show-error \
+            --header 'Content-Type: text/plain' \
+            --data-binary '<Snapshot type="png"><Container width="2" height="2" color="#FFFF0000"/></Snapshot>' \
+            --output /tmp/open-snapshot-smoke.png \
+            http://127.0.0.1:18080/snapshot
+
+          png_signature="$(od -An -tx1 -N8 /tmp/open-snapshot-smoke.png | tr -d ' \n')"
+          test "$png_signature" = "89504e470d0a1a0a"
+
       - name: Build and publish image
         uses: docker/build-push-action@v6
         with:
