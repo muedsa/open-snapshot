@@ -1,0 +1,18 @@
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+out/
+
+# IDE
+.idea/
+*.iml
+
+# Local container configuration and secrets
+.env
+.secrets/*
+!.secrets/.gitignore
+
+# Local runtime files
+*.log
+hs_err_pid*

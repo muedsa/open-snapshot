@@ -1,0 +1,173 @@
+package com.muedsa.snapshot.open
+
+import com.muedsa.snapshot.parser.SnapshotElement
+import com.muedsa.snapshot.tools.LimitedImageInputStream
+import com.muedsa.snapshot.tools.NetworkImageCache
+import io.ktor.server.application.Application
+import org.jetbrains.skia.Image
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URI
+import java.util.LinkedHashMap
+
+private class MemoryImageCache(
+    private val limit: Int,
+    private val maxBytes: Long,
+) : LinkedHashMap<String, Image>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Image>?): Boolean {
+        val remove = size > limit
+        if (remove) eldest?.value?.close()
+        return remove
+    }
+
+    override fun clear() {
+        values.forEach(Image::close)
+        super.clear()
+    }
+
+    fun putImage(url: String, image: Image): Boolean {
+        if (image.imageInfo.computeMinByteSize().toLong() > maxBytes) return false
+        remove(url)?.close()
+        super.put(url, image)
+        while (size > limit || totalBytes() > maxBytes) {
+            val eldestKey = keys.firstOrNull() ?: break
+            remove(eldestKey)?.close()
+        }
+        return containsKey(url)
+    }
+
+    fun totalBytes(): Long = values.sumOf { it.imageInfo.computeMinByteSize().toLong() }
+}
+
+private class LimitedNetworkImageCache(
+    private val memoryCache: MemoryImageCache,
+    private val maxImageNum: Int,
+    private val maxSingleImageSize: Int,
+    private val maxImageWidth: Int,
+    private val maxImageHeight: Int,
+    private val maxImagePixels: Long,
+    private val allowPrivateHosts: Boolean,
+) : NetworkImageCache {
+    override val name: String = "OpenSnapshotLimitedNetworkImageCache"
+    private var requestCount = 0
+
+    @Synchronized
+    override fun getImage(url: String, noCache: Boolean): Image {
+        if (!noCache) {
+            synchronized(memoryCache) { memoryCache[url]?.let { return it } }
+        }
+        check(requestCount < maxImageNum) {
+            "Exceeded maximum number [$maxImageNum] of image http requests"
+        }
+        requestCount++
+        val image = Image.makeFromEncoded(download(url))
+        if (image.width > maxImageWidth || image.height > maxImageHeight) {
+            image.close()
+            throw IllegalArgumentException(
+                "Image dimensions ${image.width}x${image.height} exceed maximum ${maxImageWidth}x$maxImageHeight"
+            )
+        }
+        if (image.width.toLong() * image.height.toLong() > maxImagePixels) {
+            image.close()
+            throw IllegalArgumentException(
+                "Image pixel count ${image.width.toLong() * image.height.toLong()} exceeds maximum $maxImagePixels"
+            )
+        }
+        if (!noCache) synchronized(memoryCache) { memoryCache.putImage(url, image) }
+        return image
+    }
+
+    override fun clearAll() = synchronized(memoryCache) { memoryCache.clear() }
+    override fun clearImage(url: String) {
+        synchronized(memoryCache) { memoryCache.remove(url)?.close() }
+    }
+    override fun count(): Int = synchronized(memoryCache) { memoryCache.size }
+    override fun size(): Int = synchronized(memoryCache) {
+        memoryCache.totalBytes().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun download(url: String): ByteArray {
+        val uri = URI(url)
+        require(uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) {
+            "Only http and https image URLs are allowed"
+        }
+        val host = requireNotNull(uri.host) { "Image URL must include a host" }
+        if (!allowPrivateHosts) {
+            require(!isPrivateHost(host)) {
+                "Private or local image hosts are not allowed"
+            }
+        }
+        val connection = uri.toURL().openConnection().apply {
+            connectTimeout = 10_000
+            readTimeout = 10_000
+        }
+        if (connection is HttpURLConnection) {
+            connection.instanceFollowRedirects = false
+            require(connection.responseCode in 200..299) {
+                "Image server returned HTTP ${connection.responseCode}"
+            }
+        }
+        return connection.getInputStream().use {
+            LimitedImageInputStream(it, maxSingleImageSize).readBytes()
+        }
+    }
+
+    private fun isPrivateHost(host: String): Boolean {
+        val normalized = host.lowercase().trimEnd('.')
+        if (normalized == "localhost" || normalized.endsWith(".localhost") ||
+            normalized == "metadata.google.internal" || normalized == "metadata" ||
+            normalized == "instance-data") return true
+        return InetAddress.getAllByName(normalized).any {
+            it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
+                it.isSiteLocalAddress || it.isMulticastAddress
+        }
+    }
+}
+
+private var memoryImageCache: MemoryImageCache? = null
+
+fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) {
+    val config = environment.config.config("snapshot.image")
+    val maxImageNum = config.propertyOrNull("max-image-num-once")?.getString()?.toIntOrNull() ?: 10
+    val maxSingleImageSize = config.propertyOrNull("max-single-image-size")?.getString()?.toIntOrNull() ?: 5 * 1024 * 1024
+    val memoryCacheLimit = config.propertyOrNull("memory-cache-num-limit")?.getString()?.toIntOrNull() ?: 100
+    val maxCacheBytes = config.propertyOrNull("max-cache-bytes")?.getString()?.toLongOrNull() ?: 256L * 1024 * 1024
+    val maxImageWidth = config.propertyOrNull("max-image-width")?.getString()?.toIntOrNull() ?: 4096
+    val maxImageHeight = config.propertyOrNull("max-image-height")?.getString()?.toIntOrNull() ?: 4096
+    val maxImagePixels = config.propertyOrNull("max-image-pixels")?.getString()?.toLongOrNull() ?: 16_777_216L
+    val allowPrivateHosts = allowPrivateHostsOverride ?: (
+        config.propertyOrNull("allow-private-hosts")?.getString()?.toBooleanStrictOrNull() ?: false
+        )
+    require(maxImageNum > 0) { "snapshot.image.max-image-num-once must be positive" }
+    require(maxSingleImageSize > 0) { "snapshot.image.max-single-image-size must be positive" }
+    require(memoryCacheLimit > 0) { "snapshot.image.memory-cache-num-limit must be positive" }
+    require(maxCacheBytes > 0) { "snapshot.image.max-cache-bytes must be positive" }
+    require(maxImageWidth > 0 && maxImageHeight > 0 && maxImagePixels > 0) {
+        "snapshot.image dimensions and pixel limits must be positive"
+    }
+
+    val cache = MemoryImageCache(memoryCacheLimit, maxCacheBytes)
+    memoryImageCache = cache
+    SnapshotElement.NETWORK_IMAGE_CACHE_BUILDER = {
+        LimitedNetworkImageCache(
+            cache,
+            maxImageNum,
+            maxSingleImageSize,
+            maxImageWidth,
+            maxImageHeight,
+            maxImagePixels,
+            allowPrivateHosts,
+        )
+    }
+}
+
+fun clearImageCache() {
+    memoryImageCache?.let { synchronized(it) { it.clear() } }
+}
+
+fun imageCacheInfo(): Pair<Int, Int> {
+    val cache = memoryImageCache ?: return 0 to 0
+    return synchronized(cache) {
+        cache.size to cache.totalBytes().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+}
