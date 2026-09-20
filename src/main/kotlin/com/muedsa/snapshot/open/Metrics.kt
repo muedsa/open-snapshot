@@ -22,6 +22,8 @@ private val RENDER_DURATION_BUCKETS = doubleArrayOf(0.05, 0.1, 0.25, 0.5, 1.0, 2
 
 private val QUEUE_WAIT_BUCKETS = doubleArrayOf(0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0)
 
+private val IMAGE_FETCH_BUCKETS = doubleArrayOf(0.005, 0.025, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+
 private val KNOWN_METRIC_PATHS = setOf(
     "/",
     "/snapshot",
@@ -223,6 +225,12 @@ internal object Metrics {
         buckets = QUEUE_WAIT_BUCKETS,
     )
 
+    val imageFetchDuration = Histogram(
+        name = "snapshot_image_fetch_seconds",
+        help = "Per-request time spent fetching remote images, in seconds.",
+        buckets = IMAGE_FETCH_BUCKETS,
+    )
+
     val renderQueueRejected = LabeledCounter(
         name = "snapshot_render_queue_rejected_total",
         help = "Requests rejected by render queue backpressure, by reason.",
@@ -275,6 +283,12 @@ internal object Metrics {
         }
     }
 
+    fun observeImageFetch(durationNanos: Long) {
+        if (durationNanos > 0) {
+            imageFetchDuration.observe(durationNanos / NANOS_PER_SECOND)
+        }
+    }
+
     fun renderSucceeded(durationNanos: Long, outputBytes: Int) {
         renders.inc(listOf("success"))
         renderDuration.observe(durationNanos / NANOS_PER_SECOND)
@@ -322,6 +336,7 @@ internal object Metrics {
         append(renders.render())
         append(renderDuration.render())
         append(renderQueueWait.render())
+        append(imageFetchDuration.render())
         append(renderQueueRejected.render())
         append(
             renderGauge(

@@ -22,6 +22,8 @@ internal class SnapshotRouteContext(
     val renderLimits: RenderLimits,
     val renderExecutor: RenderExecutor,
     val errorImage: ErrorImageSettings,
+    /** 是否在响应头回传排队 / 渲染 / 图片 / 总耗时。 */
+    val timingHeadersEnabled: Boolean,
 )
 
 /** `?errorImage=png` 时返回的响应头，便于调用方程序化读取错误信息。 */
@@ -42,12 +44,14 @@ internal const val ERROR_IMAGE_UNSUPPORTED = "unsupported"
 internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRouteContext) {
     val requestId = ensureRequestIdHeader()
     val startedAt = System.nanoTime()
+    val timings = RenderTimings()
 
     if (!requireRenderCredential()) return
 
     if (application.serviceState().draining.get()) {
         Metrics.renderFailed(ErrorCodes.SERVICE_UNAVAILABLE)
         response.headers.append(HttpHeaders.RetryAfter, "5")
+        finishTiming(context, timings, startedAt, cache = null)
         respondApiError(
             this,
             ApiError(
@@ -73,24 +77,28 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
             }
             if (cacheKey != null) {
                 renderResultCache?.get(cacheKey)?.let { cached ->
+                    finishTiming(context, timings, startedAt, cache = CACHE_HIT)
                     respondBytes(cached.bytes, cached.contentType)
                     return@withTimeout
                 }
             }
 
-            val result = context.renderExecutor.run {
+            val result = context.renderExecutor.run(timings) {
                 val renderStartedAt = System.nanoTime()
                 val rendered = SnapshotService.render(body, context.renderLimits)
-                Metrics.renderSucceeded(System.nanoTime() - renderStartedAt, rendered.bytes.size)
+                timings.renderNanos = System.nanoTime() - renderStartedAt
+                Metrics.renderSucceeded(timings.renderNanos, rendered.bytes.size)
                 rendered
             }
             if (cacheKey != null) {
                 renderResultCache?.put(cacheKey, result)
             }
+            finishTiming(context, timings, startedAt, cache = if (cacheKey != null) CACHE_MISS else null)
             respondBytes(result.bytes, result.contentType)
         }
     } catch (error: RequestBodyTooLarge) {
         Metrics.renderFailed(ErrorCodes.REQUEST_TOO_LARGE)
+        finishTiming(context, timings, startedAt, cache = null)
         respondApiError(
             this,
             ApiError(
@@ -105,6 +113,7 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
         application.environment.log.warn(
             "Snapshot request timed out requestId=$requestId elapsedNanos=${System.nanoTime() - startedAt}"
         )
+        finishTiming(context, timings, startedAt, cache = null)
         respondApiError(
             this,
             ApiError(
@@ -117,6 +126,7 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
     } catch (error: RenderQueueFullException) {
         Metrics.renderFailed(ErrorCodes.QUEUE_FULL)
         response.headers.append(HttpHeaders.RetryAfter, "1")
+        finishTiming(context, timings, startedAt, cache = null)
         respondApiError(
             this,
             ApiError(
@@ -129,6 +139,7 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
     } catch (error: RenderQueueTimeoutException) {
         Metrics.renderFailed(ErrorCodes.QUEUE_TIMEOUT)
         response.headers.append(HttpHeaders.RetryAfter, "1")
+        finishTiming(context, timings, startedAt, cache = null)
         respondApiError(
             this,
             ApiError(
@@ -141,8 +152,30 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
     } catch (error: CancellationException) {
         throw error
     } catch (error: Exception) {
-        respondRenderFailure(error, requestId, startedAt, source, context)
+        respondRenderFailure(error, requestId, startedAt, source, context, timings)
     }
+}
+
+/**
+ * 收尾：记录图片获取耗时指标，并写入耗时响应头。
+ *
+ * `cache` 为 null 表示本次没有渲染结果缓存语义（错误响应等），此时不写 `X-Snapshot-Cache`。
+ */
+private fun ApplicationCall.finishTiming(
+    context: SnapshotRouteContext,
+    timings: RenderTimings,
+    startedAt: Long,
+    cache: String?,
+) {
+    if (timings.imageFetchNanos > 0) {
+        Metrics.observeImageFetch(timings.imageFetchNanos)
+    }
+    appendTimingHeaders(
+        enabled = context.timingHeadersEnabled,
+        timings = timings,
+        totalNanos = System.nanoTime() - startedAt,
+        cache = cache,
+    )
 }
 
 private suspend fun ApplicationCall.respondRenderFailure(
@@ -151,6 +184,7 @@ private suspend fun ApplicationCall.respondRenderFailure(
     startedAt: Long,
     source: String?,
     context: SnapshotRouteContext,
+    timings: RenderTimings,
 ) {
     val sourceMessage = when {
         // 解析失败时补充出错位置与附近源码，便于定位 DSL 问题。
@@ -181,9 +215,10 @@ private suspend fun ApplicationCall.respondRenderFailure(
     if (requestedErrorImage()) {
         val parseError = error.findParseException()
         if (code == ErrorCodes.PARSE_ERROR && parseError != null && context.errorImage.enabled) {
-            val rendered = renderErrorImage(parseError, source.orEmpty(), requestId, code, context)
+            val rendered = renderErrorImage(parseError, source.orEmpty(), requestId, code, context, timings)
             if (rendered != null) {
                 Metrics.errorImageServed(ERROR_IMAGE_SERVED)
+                finishTiming(context, timings, startedAt, cache = null)
                 respondBytes(rendered, ContentType.Image.PNG, HttpStatusCode.BadRequest)
                 return
             }
@@ -193,6 +228,7 @@ private suspend fun ApplicationCall.respondRenderFailure(
         }
     }
 
+    finishTiming(context, timings, startedAt, cache = null)
     respondApiError(
         this,
         ApiError(
@@ -218,6 +254,7 @@ private suspend fun ApplicationCall.renderErrorImage(
     requestId: String,
     code: String,
     context: SnapshotRouteContext,
+    timings: RenderTimings,
 ): ByteArray? {
     val settings = context.errorImage
     val excerpt = buildErrorExcerpt(
@@ -230,7 +267,7 @@ private suspend fun ApplicationCall.renderErrorImage(
     val message = parseError.message ?: "Invalid snapshot document"
     val bytes = try {
         withTimeout(context.maxRenderTimeoutMs) {
-            context.renderExecutor.run { errorImageRenderer(excerpt, message, requestId) }
+            context.renderExecutor.run(timings) { errorImageRenderer(excerpt, message, requestId) }
         }
     } catch (error: TimeoutCancellationException) {
         application.environment.log.warn("Parse error image timed out requestId=$requestId")

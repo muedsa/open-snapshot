@@ -109,6 +109,33 @@ curl -X POST "http://localhost:8080/snapshot?errorImage=png" `
 - 摘录范围由 `error-image.max-lines`、`max-columns`、`context-lines` 控制，`error-image.enabled=false` 可关闭；
 - 非解析类错误（画布超限、图片加载失败等）仍返回 JSON。
 
+#### 响应耗时元数据
+
+成功与失败响应都带标准 `Server-Timing`，调用方与浏览器 DevTools 的 Timing 面板可直接看到耗时构成：
+
+```http
+Server-Timing: queue;dur=0.3, render;dur=12.4, image;dur=8.1, total;dur=14.2
+X-Snapshot-Cache: miss
+X-Snapshot-Image-Count: 2
+```
+
+| 段 / 头 | 含义 | 出现条件 |
+|---|---|---|
+| `queue;dur` | 等待渲染槽位的耗时（含被拒绝前的等待） | 经历过排队 |
+| `render;dur` | 纯渲染耗时（解析 + 布局 + 光栅化 + 编码） | 实际执行了渲染 |
+| `image;dur` | 本请求在远程图片上消耗的时间（含等待同 URL 并发去重） | 请求中加载过网络图片 |
+| `cache;desc=hit` | 渲染结果缓存命中 | 命中时（此时没有 `render` 段） |
+| `total;dur` | 服务端处理总耗时 | 能进入路由的所有响应 |
+| `X-Snapshot-Cache` | `hit` / `miss` | `/snapshot` 且启用渲染结果缓存 |
+| `X-Snapshot-Image-Count` | 本请求真正发起的图片下载次数（304 复用不计入） | 有下载时 |
+
+说明：
+
+- 耗时单位为毫秒、保留 1 位小数；错误响应（如 `400 PARSE_ERROR`）同样带 `total`，但不含未发生的阶段；
+- `429` 由限流插件在进入路由前产生，无法附加这些头，请通过 `snapshot_rate_limited_total` 指标观察；
+- 浏览器 JS 读取需要服务端显式暴露（已加入 `Access-Control-Expose-Headers`）；
+- `timing-headers.enabled=false` 可关闭全部耗时头。
+
 #### 渲染执行模型
 
 - 渲染在专用线程池上执行，线程名为 `snapshot-render-*`，不会占用 Netty 连接处理线程；
@@ -243,6 +270,9 @@ snapshot:
     max-lines: 8
     max-columns: 80
     context-lines: 2
+  # 耗时响应头：Server-Timing 与 X-Snapshot-Cache / X-Snapshot-Image-Count
+  timing-headers:
+    enabled: true
   # 留空表示开放调用；填写后 /snapshot 需要 API Key，多 Key 见 api-keys 列表。
   api-key: ""
   access-log-enabled: true
@@ -355,6 +385,7 @@ event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=2
 | `snapshot_render_in_flight` | gauge | 正在执行的渲染数 |
 | `snapshot_render_pending` | gauge | 等待渲染槽位的请求数 |
 | `snapshot_render_queue_wait_seconds` | histogram | 排队等待槽位的耗时分布 |
+| `snapshot_image_fetch_seconds` | histogram | 单次请求在远程图片上消耗的时间分布 |
 | `snapshot_render_queue_rejected_total{reason}` | counter | 背压拒绝数，`reason` 为 `full` 或 `timeout` |
 | `snapshot_render_cache_hits_total` / `_misses_total` / `_evictions_total` | counter | 渲染结果缓存命中、未命中与淘汰 |
 | `snapshot_render_cache_entries` / `_bytes` | gauge | 渲染结果缓存条目数与占用字节 |

@@ -87,6 +87,10 @@ internal data class RenderQueueSettings(
 )
 
 /** 解析错误高亮图配置。 */
+internal data class TimingSettings(
+    val enabled: Boolean,
+)
+
 internal data class ErrorImageSettings(
     val enabled: Boolean,
     val maxLines: Int,
@@ -111,6 +115,7 @@ internal class SnapshotConfig(
     val renderCache: RenderCacheSettings,
     val renderQueue: RenderQueueSettings,
     val errorImage: ErrorImageSettings,
+    val timingHeaders: TimingSettings,
     val cors: CorsSettings,
     val admin: AdminSettings,
     /** 匿名调用方是否开放；由是否配置客户端凭据决定。 */
@@ -262,6 +267,9 @@ internal object SnapshotConfigLoader {
                     "snapshot.render-queue-timeout-ms",
                     RenderExecutor.DEFAULT_QUEUE_TIMEOUT_MS,
                 ),
+            ),
+            timingHeaders = TimingSettings(
+                enabled = boolean("snapshot.timing-headers.enabled", true),
             ),
             errorImage = ErrorImageSettings(
                 enabled = boolean("snapshot.error-image.enabled", true),

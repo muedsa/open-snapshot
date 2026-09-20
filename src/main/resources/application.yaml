@@ -31,6 +31,9 @@ snapshot:
     max-entries: 256
     max-bytes: 67108864
     ttl-ms: 60000
+  # 耗时响应头：Server-Timing 与 X-Snapshot-Cache / X-Snapshot-Image-Count。
+  timing-headers:
+    enabled: true
   # 解析错误高亮图：请求带 ?errorImage=png 时把解析错误渲染成图片。
   error-image:
     enabled: true

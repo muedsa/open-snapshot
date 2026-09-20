@@ -59,6 +59,7 @@ private fun Application.configureRoutingInternal(
         ),
         renderExecutor = renderExecutor,
         errorImage = config.errorImage,
+        timingHeadersEnabled = config.timingHeaders.enabled,
     )
 
     routing {

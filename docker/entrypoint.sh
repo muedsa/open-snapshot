@@ -39,6 +39,9 @@ fi
 if [ -n "${SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES:-}" ]; then
     set -- "$@" "-P:snapshot.error-image.context-lines=${SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES}"
 fi
+if [ -n "${SNAPSHOT_TIMING_HEADERS_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.timing-headers.enabled=${SNAPSHOT_TIMING_HEADERS_ENABLED}"
+fi
 if [ -n "${SNAPSHOT_ACCESS_LOG_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.access-log-enabled=${SNAPSHOT_ACCESS_LOG_ENABLED}"
 fi
