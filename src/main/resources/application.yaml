@@ -84,3 +84,8 @@ snapshot:
     allow-private-hosts: false
     connect-timeout-ms: 10000
     read-timeout-ms: 10000
+    # 图片缓存 TTL：0 表示永不过期；过期后用 ETag 做条件请求复用图片。
+    cache-ttl-ms: 600000
+    # 瞬时失败（5xx、超时、IO）的重试次数与退避基数。
+    max-retries: 1
+    retry-backoff-ms: 200

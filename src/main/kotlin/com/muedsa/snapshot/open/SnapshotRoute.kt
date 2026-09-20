@@ -144,11 +144,14 @@ private suspend fun ApplicationCall.respondRenderFailure(
         error is com.muedsa.snapshot.parser.ParseException -> SnapshotService.formatError(error, source.orEmpty())
         else -> error.message ?: error::class.simpleName ?: "Snapshot rendering failed"
     }
-    val clientError = error is com.muedsa.snapshot.parser.ParseException ||
+    val clientError = error.containsImageLoadFailure() ||
+        error is com.muedsa.snapshot.parser.ParseException ||
         error is IllegalArgumentException ||
         error is IllegalStateException
     val status = if (clientError) HttpStatusCode.BadRequest else HttpStatusCode.InternalServerError
     val code = when {
+        // 解析器会把构建 widget 时的异常包成 ParseException，因此要沿因果链判断图片加载失败。
+        error.containsImageLoadFailure() -> ErrorCodes.IMAGE_LOAD_ERROR
         error is IllegalArgumentException && sourceMessage.contains("must not be empty") -> ErrorCodes.EMPTY_REQUEST
         sourceMessage.contains("image URL", ignoreCase = true) -> ErrorCodes.IMAGE_LOAD_ERROR
         error is com.muedsa.snapshot.parser.ParseException -> ErrorCodes.PARSE_ERROR
@@ -179,3 +182,7 @@ internal suspend fun ApplicationCall.receiveLimitedText(maxBytes: Long): String 
     if (bytes.size.toLong() > maxBytes) throw RequestBodyTooLarge(maxBytes)
     return bytes.toString(Charsets.UTF_8)
 }
+
+/** 因果链上是否存在图片加载失败：解析器会把构建 widget 时的异常包装成 ParseException。 */
+private fun Throwable.containsImageLoadFailure(): Boolean =
+    generateSequence(this) { it.cause }.any { it is ImageLoadException }

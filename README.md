@@ -79,6 +79,8 @@ curl -X POST http://localhost:8080/snapshot `
 | `IMAGE_LOAD_ERROR` | 400 | 图片地址非法、非 HTTP(S)、私网地址、超时或格式错误 |
 | `REQUEST_TOO_LARGE` | 413 | 请求体超过 `max-request-size` |
 | `RENDER_TIMEOUT` | 504 | 渲染超过 `max-render-timeout-ms` |
+| `FONT_NOT_FOUND` | 400 | `/fonts.png` 的 `family` 中包含不存在的字体族 |
+| `INVALID_QUERY` | 400 | 查询参数不合法（例如 `offset`/`limit` 不是非负整数） |
 | `RATE_LIMITED` | 429 | 触发限流（Ktor 限流插件直接返回 429，带 `Retry-After`） |
 | `QUEUE_FULL` | 503 | 等待渲染槽位的请求数超过 `max-render-queue`，带 `Retry-After` |
 | `QUEUE_TIMEOUT` | 503 | 排队等待超过 `render-queue-timeout-ms`，带 `Retry-After` |
@@ -105,7 +107,7 @@ curl -X POST http://localhost:8080/snapshot `
 | `GET /ready` | 就绪检查：渲染链路可用且未在排水时返回 `READY`，否则 `503` + `NOT_READY` |
 | `GET /metrics` | Prometheus 文本指标（`text/plain; version=0.0.4`） |
 | `GET /fonts` | 返回可用字体列表（管理接口） |
-| `GET /fonts.png` | 返回字体预览图（管理接口） |
+| `GET /fonts.png` | 字体预览图（管理接口），支持 `family`、`offset`、`limit` |
 | `GET /cacheInfo` | 查看网络图片缓存与渲染结果缓存统计（管理接口） |
 | `POST /cacheClear` | 清理网络图片缓存与渲染结果缓存（管理接口） |
 
@@ -249,6 +251,11 @@ snapshot:
     allow-private-hosts: false
     connect-timeout-ms: 10000
     read-timeout-ms: 10000
+    # 图片缓存 TTL：0 表示永不过期
+    cache-ttl-ms: 600000
+    # 瞬时失败重试
+    max-retries: 1
+    retry-backoff-ms: 200
 ```
 
 配置只在一处解析（`SnapshotConfig`），并在启动时一次性校验：非法值会让服务启动失败，
@@ -331,7 +338,9 @@ event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=2
 | `snapshot_http_requests_total{path,method,status}` | counter | 各路由请求数与状态码 |
 | `snapshot_http_request_duration_seconds{path}` | summary | 各路由请求耗时 |
 | `snapshot_image_cache_hits_total` / `snapshot_image_cache_misses_total` | counter | 网络图片缓存命中与未命中 |
-| `snapshot_image_downloads_total` / `snapshot_image_download_failures_total` | counter | 图片下载次数与失败次数 |
+| `snapshot_image_cache_evictions_total` / `_expirations_total` | counter | 图片缓存容量淘汰与 TTL 过期次数 |
+| `snapshot_image_revalidations_total{result}` | counter | 条件请求结果：`not_modified`（复用）或 `updated` |
+| `snapshot_image_downloads_total` / `snapshot_image_download_failures_total` / `_download_retries_total` | counter | 图片下载次数、失败次数与重试次数 |
 | `snapshot_rate_limited_total{scope}` | counter | 被限流拒绝的请求数，按层级（`anonymous`/`credential`/`admin`）区分 |
 | `snapshot_image_cache_entries` / `snapshot_image_cache_bytes` | gauge | 缓存图片数量与估算占用 |
 
@@ -354,6 +363,39 @@ scrape_configs:
   Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner 回收本地内存；
 - 同一 URL 的并发请求只下载与解码一次，其余调用共享同一结果；
 - 每张图片仍受单图大小、解码宽高、像素数与私网地址限制，单次渲染请求数受 `max-image-num-once` 限制。
+
+`cache-ttl-ms` 控制缓存新鲜度（默认 10 分钟，`0` 表示永不过期）：
+
+- 条目未过期 → 直接命中；
+- 条目过期且响应带 `ETag` → 发起 `If-None-Match` 条件请求，`304` 时复用原图片并刷新过期时间，`200` 时替换为新图片；
+- 条目过期且没有 `ETag` → 重新下载。
+
+瞬时故障（5xx、408、429、连接或读取失败）会按 `retry-backoff-ms × 重试次数` 退避重试，
+最多 `max-retries` 次；4xx 等确定性失败不重试。
+
+图片相关指标：`snapshot_image_cache_hits_total`、`_misses_total`、`_entries`、`_bytes`、
+`_evictions_total`（容量淘汰）、`_expirations_total`（TTL 过期）、
+`snapshot_image_revalidations_total{result="not_modified|updated"}`、
+`snapshot_image_downloads_total`、`_download_failures_total`、`_download_retries_total`。
+
+### 字体预览
+
+`GET /fonts.png` 支持按需渲染，避免系统字体很多时一次性出图过大：
+
+```bash
+# 只渲染指定字体（逗号分隔，名称大小写不敏感）
+curl -H "Authorization: Bearer $SNAPSHOT_ADMIN_TOKEN" \
+  --get --data-urlencode "family=DejaVu Serif,Inter" \
+  http://localhost:8080/fonts.png --output fonts.png
+
+# 分页：每页 10 个字体，第 2 页
+curl -H "Authorization: Bearer $SNAPSHOT_ADMIN_TOKEN" \
+  "http://localhost:8080/fonts.png?offset=10&limit=10" --output fonts-page2.png
+```
+
+- `family` 中有不存在的字体族时返回 `400 FONT_NOT_FOUND`（消息里列出未知名称）；
+- `offset`/`limit` 不是非负整数时返回 `400 INVALID_QUERY`；`limit=0` 表示不限制；
+- 相同查询会命中渲染结果缓存，重复拉取不会再次渲染。
 
 ### 渲染结果缓存与背压
 
@@ -451,6 +493,8 @@ SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS=4
 SNAPSHOT_MAX_RENDER_QUEUE=16
 SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS=3000
 SNAPSHOT_RENDER_CACHE_TTL_MS=300000
+SNAPSHOT_IMAGE_CACHE_TTL_MS=600000
+SNAPSHOT_IMAGE_MAX_RETRIES=2
 ```
 
 配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名、字体族与 `api-keys` 列表属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN`、`SNAPSHOT_API_KEY` 与 `SNAPSHOT_API_KEYS` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。

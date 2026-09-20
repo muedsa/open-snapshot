@@ -105,6 +105,15 @@ fi
 if [ -n "${SNAPSHOT_IMAGE_READ_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.image.read-timeout-ms=${SNAPSHOT_IMAGE_READ_TIMEOUT_MS}"
 fi
+if [ -n "${SNAPSHOT_IMAGE_CACHE_TTL_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.image.cache-ttl-ms=${SNAPSHOT_IMAGE_CACHE_TTL_MS}"
+fi
+if [ -n "${SNAPSHOT_IMAGE_MAX_RETRIES:-}" ]; then
+    set -- "$@" "-P:snapshot.image.max-retries=${SNAPSHOT_IMAGE_MAX_RETRIES}"
+fi
+if [ -n "${SNAPSHOT_IMAGE_RETRY_BACKOFF_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.image.retry-backoff-ms=${SNAPSHOT_IMAGE_RETRY_BACKOFF_MS}"
+fi
 # SNAPSHOT_API_KEY、SNAPSHOT_API_KEYS 与 SNAPSHOT_ADMIN_TOKEN 一样，由应用直接读取环境变量，
 # 不转换为命令行参数，避免密钥出现在进程列表中。
 

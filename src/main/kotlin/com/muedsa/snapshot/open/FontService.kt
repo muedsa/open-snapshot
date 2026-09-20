@@ -15,19 +15,58 @@ import org.jetbrains.skia.Color
 import org.jetbrains.skia.FontMgr
 import org.jetbrains.skia.FontStyle
 
+/** 字体预览的选择结果：实际渲染的字体，以及请求中不存在的字体。 */
+internal data class FontSelection(
+    val selected: List<String>,
+    val unknown: List<String>,
+)
+
+/**
+ * 从可用字体中挑选要渲染的字体：先按请求过滤（大小写不敏感），再按 offset/limit 分页。
+ *
+ * `limit` 为 0 表示不限制；偏移超出范围时返回空列表。
+ */
+internal fun selectFontFamilies(
+    available: List<String>,
+    requested: List<String>,
+    offset: Int,
+    limit: Int,
+): FontSelection {
+    val candidates = if (requested.isEmpty()) {
+        available
+    } else {
+        val availableByLowercase = available.associateBy { it.lowercase() }
+        val matched = requested.mapNotNull { availableByLowercase[it.lowercase()] }.distinct()
+        val unknown = requested.filter { it.lowercase() !in availableByLowercase }
+        return FontSelection(
+            selected = paginate(available.filter { it in matched }, offset, limit),
+            unknown = unknown,
+        )
+    }
+    return FontSelection(selected = paginate(candidates, offset, limit), unknown = emptyList())
+}
+
+private fun paginate(families: List<String>, offset: Int, limit: Int): List<String> {
+    if (offset >= families.size) return emptyList()
+    val fromOffset = families.drop(offset)
+    return if (limit > 0) fromOffset.take(limit) else fromOffset
+}
+
 object FontService {
-    fun listFonts(): String = buildString {
+    /** 系统可用字体族名称。 */
+    fun familyNames(): List<String> = buildList {
         repeat(FontMgr.default.familiesCount) { index ->
-            if (index > 0) append('\n')
-            append(FontMgr.default.getFamilyName(index))
+            add(FontMgr.default.getFamilyName(index))
         }
     }
 
-    fun drawFonts(): ByteArray = SnapshotPNG {
+    fun listFonts(): String = familyNames().joinToString("\n")
+
+    /** 渲染指定字体的预览图；`families` 为空时渲染全部字体。 */
+    fun drawFonts(families: List<String> = familyNames()): ByteArray = SnapshotPNG {
         Padding(padding = EdgeInsets.all(20f)) {
             Column(crossAxisAlignment = CrossAxisAlignment.START) {
-                repeat(FontMgr.default.familiesCount) { index ->
-                    val family = FontMgr.default.getFamilyName(index)
+                families.forEach { family ->
                     RichText {
                         TextSpan(
                             text = family,
