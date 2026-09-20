@@ -88,6 +88,7 @@ class ObservabilityTest {
         )
         assertTrue(text.contains("snapshot_image_cache_entries"))
         assertTrue(text.contains("snapshot_ready"))
+        assertTrue(text.contains("snapshot_render_pending"))
     }
 
     @Test

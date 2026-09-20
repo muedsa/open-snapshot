@@ -9,29 +9,30 @@ import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URI
 import java.util.LinkedHashMap
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
+import java.util.concurrent.ConcurrentHashMap
 
-private class MemoryImageCache(
+/**
+ * 全局内存图片缓存（按访问顺序的 LRU）。
+ *
+ * 淘汰与清空只丢弃引用、不调用 `Image.close()`：缓存里的图片可能正被另一个并发渲染绘制，
+ * 关闭它会让对方拿到已释放的本地对象。Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner
+ * 释放本地内存，因此丢弃引用即可安全回收。
+ */
+internal class MemoryImageCache(
     private val limit: Int,
     private val maxBytes: Long,
 ) : LinkedHashMap<String, Image>(16, 0.75f, true) {
-    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Image>?): Boolean {
-        val remove = size > limit
-        if (remove) eldest?.value?.close()
-        return remove
-    }
-
-    override fun clear() {
-        values.forEach(Image::close)
-        super.clear()
-    }
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Image>?): Boolean = size > limit
 
     fun putImage(url: String, image: Image): Boolean {
         if (image.imageInfo.computeMinByteSize().toLong() > maxBytes) return false
-        remove(url)?.close()
         super.put(url, image)
         while (size > limit || totalBytes() > maxBytes) {
             val eldestKey = keys.firstOrNull() ?: break
-            remove(eldestKey)?.close()
+            if (eldestKey == url) break
+            remove(eldestKey)
         }
         return containsKey(url)
     }
@@ -39,7 +40,39 @@ private class MemoryImageCache(
     fun totalBytes(): Long = values.sumOf { it.imageInfo.computeMinByteSize().toLong() }
 }
 
-private class LimitedNetworkImageCache(
+/**
+ * 同一图片 URL 的并发加载去重：多个渲染同时请求同一地址时只下载与解码一次，
+ * 其余调用等待同一个结果，避免重复网络请求与重复解码。
+ */
+internal object SharedImageLoader {
+    private val inFlight = ConcurrentHashMap<String, CompletableFuture<Image>>()
+
+    fun load(url: String, loader: () -> Image): Image {
+        while (true) {
+            inFlight[url]?.let { pending ->
+                return try {
+                    pending.join()
+                } catch (error: CompletionException) {
+                    throw error.cause ?: error
+                }
+            }
+            val pending = CompletableFuture<Image>()
+            if (inFlight.putIfAbsent(url, pending) != null) continue
+            try {
+                val image = loader()
+                pending.complete(image)
+                return image
+            } catch (error: Throwable) {
+                pending.completeExceptionally(error)
+                throw error
+            } finally {
+                inFlight.remove(url, pending)
+            }
+        }
+    }
+}
+
+internal class LimitedNetworkImageCache(
     private val memoryCache: MemoryImageCache,
     private val maxImageNum: Int,
     private val maxSingleImageSize: Int,
@@ -65,6 +98,12 @@ private class LimitedNetworkImageCache(
             "Exceeded maximum number [$maxImageNum] of image http requests"
         }
         requestCount++
+        val image = SharedImageLoader.load(url) { loadImage(url) }
+        if (!noCache) synchronized(memoryCache) { memoryCache.putImage(url, image) }
+        return image
+    }
+
+    private fun loadImage(url: String): Image {
         val encoded = try {
             Metrics.imageDownloads.inc()
             download(url)
@@ -85,13 +124,12 @@ private class LimitedNetworkImageCache(
                 "Image pixel count ${image.width.toLong() * image.height.toLong()} exceeds maximum $maxImagePixels"
             )
         }
-        if (!noCache) synchronized(memoryCache) { memoryCache.putImage(url, image) }
         return image
     }
 
     override fun clearAll() = synchronized(memoryCache) { memoryCache.clear() }
     override fun clearImage(url: String) {
-        synchronized(memoryCache) { memoryCache.remove(url)?.close() }
+        synchronized(memoryCache) { memoryCache.remove(url) }
     }
     override fun count(): Int = synchronized(memoryCache) { memoryCache.size }
     override fun size(): Int = synchronized(memoryCache) {

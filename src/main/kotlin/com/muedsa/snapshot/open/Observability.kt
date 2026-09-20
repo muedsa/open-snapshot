@@ -20,8 +20,6 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.util.AttributeKey
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.jetbrains.skia.FontMgr
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -124,17 +122,6 @@ internal fun sanitizeLogValue(value: String, maxLength: Int): String = buildStri
         append(if (char.code < 0x20 || char.code == 0x7f || char == ' ') '_' else char)
     }
 }
-
-/** 渲染并发额度：仅在真正执行渲染时计入 in-flight 指标。 */
-internal suspend fun <T> withRenderSlot(semaphore: Semaphore, block: suspend () -> T): T =
-    semaphore.withPermit {
-        Metrics.renderInFlight.inc()
-        try {
-            block()
-        } finally {
-            Metrics.renderInFlight.dec()
-        }
-    }
 
 /**
  * 生命周期：接入 Ktor 的停机事件，让服务在退出前先进入排水状态。

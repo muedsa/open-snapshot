@@ -116,6 +116,21 @@ class ServerTest {
     }
 
     @Test
+    fun `snapshot endpoint reports parse error position`() = testApplication {
+        configure()
+
+        val response = client.post("/snapshot") {
+            header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+            setBody("<Snapshot><Container width=\"1\"height=\"1\"/></Snapshot>")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        val body = response.body<String>()
+        assertTrue(body.contains("PARSE_ERROR"), body)
+        assertTrue(body.contains("at position"), body)
+    }
+
+    @Test
     fun `snapshot endpoint rejects oversized canvas`() = testApplication {
         configure()
 
