@@ -28,30 +28,18 @@ private fun Application.configureRoutingInternal(
     adminEndpointsEnabledOverride: Boolean? = null,
     adminTokenOverride: String? = null,
 ) {
-    val maxRequestSize = environment.config
-        .propertyOrNull("snapshot.max-request-size")?.getString()?.toLongOrNull() ?: 1_048_576L
-    require(maxRequestSize > 0) { "snapshot.max-request-size must be positive" }
-    val maxConcurrentRenders = environment.config
-        .propertyOrNull("snapshot.max-concurrent-renders")?.getString()?.toIntOrNull() ?: 4
-    require(maxConcurrentRenders > 0) { "snapshot.max-concurrent-renders must be positive" }
+    val config = snapshotConfig()
+    val maxRequestSize = config.maxRequestSize
+    val maxConcurrentRenders = config.maxConcurrentRenders
     val renderLimits = RenderLimits(
-        maxWidth = environment.config.propertyOrNull("snapshot.max-canvas-width")?.getString()?.toIntOrNull() ?: 4096,
-        maxHeight = environment.config.propertyOrNull("snapshot.max-canvas-height")?.getString()?.toIntOrNull() ?: 4096,
-        maxPixels = environment.config.propertyOrNull("snapshot.max-canvas-pixels")?.getString()?.toLongOrNull() ?: 16_777_216,
+        maxWidth = config.canvas.maxWidth,
+        maxHeight = config.canvas.maxHeight,
+        maxPixels = config.canvas.maxPixels,
     )
-    require(renderLimits.maxWidth > 0 && renderLimits.maxHeight > 0 && renderLimits.maxPixels > 0) {
-        "snapshot canvas limits must be positive"
-    }
-    val maxRenderTimeoutMs = environment.config
-        .propertyOrNull("snapshot.max-render-timeout-ms")?.getString()?.toLongOrNull() ?: 30_000L
-    require(maxRenderTimeoutMs > 0) { "snapshot.max-render-timeout-ms must be positive" }
-    val adminEndpointsEnabled = adminEndpointsEnabledOverride ?: (
-        environment.config.propertyOrNull("snapshot.admin-endpoints-enabled")
-            ?.getString()?.toBooleanStrictOrNull() ?: false
-        )
-    val adminToken = adminTokenOverride
-        ?: System.getenv("SNAPSHOT_ADMIN_TOKEN")?.takeIf(String::isNotBlank)
-        ?: environment.config.propertyOrNull("snapshot.admin-token")?.getString()?.takeIf(String::isNotBlank)
+    val maxRenderTimeoutMs = config.maxRenderTimeoutMs
+    val adminEndpointsEnabled = adminEndpointsEnabledOverride ?: config.admin.enabled
+    val adminToken = adminTokenOverride ?: config.admin.token
+    val apiKey = config.apiKey
     require(!adminEndpointsEnabled || adminToken != null) {
         "SNAPSHOT_ADMIN_TOKEN or snapshot.admin-token is required when admin endpoints are enabled"
     }
@@ -71,11 +59,12 @@ private fun Application.configureRoutingInternal(
             post("/snapshot") {
                 val requestId = call.ensureRequestIdHeader()
                 val startedAt = System.nanoTime()
+                if (apiKey != null && !call.authorizeApiKey(apiKey)) return@post
                 if (call.application.serviceState().draining.get()) {
-                    Metrics.renderFailed("SERVICE_UNAVAILABLE")
+                    Metrics.renderFailed(ErrorCodes.SERVICE_UNAVAILABLE)
                     call.response.headers.append(HttpHeaders.RetryAfter, "5")
                     respondApiError(call, ApiError(
-                        code = "SERVICE_UNAVAILABLE",
+                        code = ErrorCodes.SERVICE_UNAVAILABLE,
                         message = "Service is shutting down",
                         requestId = requestId,
                         status = HttpStatusCode.ServiceUnavailable,
@@ -96,20 +85,20 @@ private fun Application.configureRoutingInternal(
                         call.respondBytes(result.bytes, result.contentType)
                     }
                 } catch (error: RequestBodyTooLarge) {
-                    Metrics.renderFailed("REQUEST_TOO_LARGE")
+                    Metrics.renderFailed(ErrorCodes.REQUEST_TOO_LARGE)
                     respondApiError(call, ApiError(
-                        code = "REQUEST_TOO_LARGE",
+                        code = ErrorCodes.REQUEST_TOO_LARGE,
                         message = "Snapshot request body exceeds ${error.maxBytes} bytes",
                         requestId = requestId,
                         status = HttpStatusCode.PayloadTooLarge,
                     ))
                 } catch (error: TimeoutCancellationException) {
-                    Metrics.renderFailed("RENDER_TIMEOUT")
+                    Metrics.renderFailed(ErrorCodes.RENDER_TIMEOUT)
                     call.application.environment.log.warn(
                         "Snapshot request timed out requestId=$requestId elapsedNanos=${System.nanoTime() - startedAt}"
                     )
                     respondApiError(call, ApiError(
-                        code = "RENDER_TIMEOUT",
+                        code = ErrorCodes.RENDER_TIMEOUT,
                         message = "Snapshot rendering exceeded ${maxRenderTimeoutMs} ms",
                         requestId = requestId,
                         status = HttpStatusCode.GatewayTimeout,
@@ -118,7 +107,7 @@ private fun Application.configureRoutingInternal(
                     throw error
                 } catch (error: Exception) {
                     val sourceMessage = when {
-                        // 解析失败时补充出错位置与附近源码，便于定位 DSL 问题。
+                        // 解析失败时补充出错位置与附近源码，便于定�?DSL 问题�?
                         error is com.muedsa.snapshot.parser.ParseException -> SnapshotService.formatError(error, source.orEmpty())
                         else -> error.message ?: error::class.simpleName ?: "Snapshot rendering failed"
                     }
@@ -132,11 +121,11 @@ private fun Application.configureRoutingInternal(
                         HttpStatusCode.InternalServerError
                     }
                     val code = when {
-                        error is IllegalArgumentException && sourceMessage.contains("must not be empty") -> "EMPTY_REQUEST"
-                        sourceMessage.contains("image URL", ignoreCase = true) -> "IMAGE_LOAD_ERROR"
-                        error is com.muedsa.snapshot.parser.ParseException -> "PARSE_ERROR"
-                        status == HttpStatusCode.BadRequest -> "RENDER_ERROR"
-                        else -> "INTERNAL_ERROR"
+                        error is IllegalArgumentException && sourceMessage.contains("must not be empty") -> ErrorCodes.EMPTY_REQUEST
+                        sourceMessage.contains("image URL", ignoreCase = true) -> ErrorCodes.IMAGE_LOAD_ERROR
+                        error is com.muedsa.snapshot.parser.ParseException -> ErrorCodes.PARSE_ERROR
+                        status == HttpStatusCode.BadRequest -> ErrorCodes.RENDER_ERROR
+                        else -> ErrorCodes.INTERNAL_ERROR
                     }
                     Metrics.renderFailed(code)
                     call.application.environment.log.warn(
@@ -213,7 +202,7 @@ private suspend fun io.ktor.server.application.ApplicationCall.authorizeAdmin(ex
     val requestId = ensureRequestIdHeader()
     response.headers.append(HttpHeaders.WWWAuthenticate, "Bearer")
     respondApiError(this, ApiError(
-        code = "UNAUTHORIZED",
+        code = ErrorCodes.UNAUTHORIZED,
         message = "A valid admin bearer token is required",
         requestId = requestId,
         status = HttpStatusCode.Unauthorized,

@@ -80,6 +80,8 @@ internal class LimitedNetworkImageCache(
     private val maxImageHeight: Int,
     private val maxImagePixels: Long,
     private val allowPrivateHosts: Boolean,
+    private val connectTimeoutMs: Int = 10_000,
+    private val readTimeoutMs: Int = 10_000,
 ) : NetworkImageCache {
     override val name: String = "OpenSnapshotLimitedNetworkImageCache"
     private var requestCount = 0
@@ -148,8 +150,8 @@ internal class LimitedNetworkImageCache(
             }
         }
         val connection = uri.toURL().openConnection().apply {
-            connectTimeout = 10_000
-            readTimeout = 10_000
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
         }
         return try {
             if (connection is HttpURLConnection) {
@@ -236,36 +238,21 @@ private fun isBlockedIpv6(bytes: List<Int>): Boolean {
 private var memoryImageCache: MemoryImageCache? = null
 
 fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) {
-    val config = environment.config.config("snapshot.image")
-    val maxImageNum = config.propertyOrNull("max-image-num-once")?.getString()?.toIntOrNull() ?: 10
-    val maxSingleImageSize = config.propertyOrNull("max-single-image-size")?.getString()?.toIntOrNull() ?: 5 * 1024 * 1024
-    val memoryCacheLimit = config.propertyOrNull("memory-cache-num-limit")?.getString()?.toIntOrNull() ?: 100
-    val maxCacheBytes = config.propertyOrNull("max-cache-bytes")?.getString()?.toLongOrNull() ?: 256L * 1024 * 1024
-    val maxImageWidth = config.propertyOrNull("max-image-width")?.getString()?.toIntOrNull() ?: 4096
-    val maxImageHeight = config.propertyOrNull("max-image-height")?.getString()?.toIntOrNull() ?: 4096
-    val maxImagePixels = config.propertyOrNull("max-image-pixels")?.getString()?.toLongOrNull() ?: 16_777_216L
-    val allowPrivateHosts = allowPrivateHostsOverride ?: (
-        config.propertyOrNull("allow-private-hosts")?.getString()?.toBooleanStrictOrNull() ?: false
-        )
-    require(maxImageNum > 0) { "snapshot.image.max-image-num-once must be positive" }
-    require(maxSingleImageSize > 0) { "snapshot.image.max-single-image-size must be positive" }
-    require(memoryCacheLimit > 0) { "snapshot.image.memory-cache-num-limit must be positive" }
-    require(maxCacheBytes > 0) { "snapshot.image.max-cache-bytes must be positive" }
-    require(maxImageWidth > 0 && maxImageHeight > 0 && maxImagePixels > 0) {
-        "snapshot.image dimensions and pixel limits must be positive"
-    }
-
-    val cache = MemoryImageCache(memoryCacheLimit, maxCacheBytes)
+    val limits = snapshotConfig().image
+    val allowPrivateHosts = allowPrivateHostsOverride ?: limits.allowPrivateHosts
+    val cache = MemoryImageCache(limits.memoryCacheNumLimit, limits.maxCacheBytes)
     memoryImageCache = cache
     SnapshotElement.NETWORK_IMAGE_CACHE_BUILDER = {
         LimitedNetworkImageCache(
-            cache,
-            maxImageNum,
-            maxSingleImageSize,
-            maxImageWidth,
-            maxImageHeight,
-            maxImagePixels,
-            allowPrivateHosts,
+            memoryCache = cache,
+            maxImageNum = limits.maxImageNumOnce,
+            maxSingleImageSize = limits.maxSingleImageSize,
+            maxImageWidth = limits.maxImageWidth,
+            maxImageHeight = limits.maxImageHeight,
+            maxImagePixels = limits.maxImagePixels,
+            allowPrivateHosts = allowPrivateHosts,
+            connectTimeoutMs = limits.connectTimeoutMs,
+            readTimeoutMs = limits.readTimeoutMs,
         )
     }
 }
