@@ -7,12 +7,18 @@ services:
         - gpr_user
         - gpr_key
     restart: unless-stopped
+    # Docker 先发 SIGTERM，应用最多需要 10s 排水 + 15s 收尾，这里留出余量。
+    stop_grace_period: 30s
     expose:
       - "8080"
     environment:
       SNAPSHOT_MAX_REQUEST_SIZE: "${SNAPSHOT_MAX_REQUEST_SIZE:-}"
       SNAPSHOT_MAX_CONCURRENT_RENDERS: "${SNAPSHOT_MAX_CONCURRENT_RENDERS:-}"
       SNAPSHOT_MAX_RENDER_TIMEOUT_MS: "${SNAPSHOT_MAX_RENDER_TIMEOUT_MS:-}"
+      SNAPSHOT_ACCESS_LOG_ENABLED: "${SNAPSHOT_ACCESS_LOG_ENABLED:-}"
+      SNAPSHOT_METRICS_ENABLED: "${SNAPSHOT_METRICS_ENABLED:-}"
+      SNAPSHOT_SHUTDOWN_GRACE_MS: "${SNAPSHOT_SHUTDOWN_GRACE_MS:-}"
+      SNAPSHOT_SHUTDOWN_TIMEOUT_MS: "${SNAPSHOT_SHUTDOWN_TIMEOUT_MS:-}"
       SNAPSHOT_RATE_LIMIT_REQUESTS: "${SNAPSHOT_RATE_LIMIT_REQUESTS:-}"
       SNAPSHOT_RATE_LIMIT_WINDOW_MS: "${SNAPSHOT_RATE_LIMIT_WINDOW_MS:-}"
       SNAPSHOT_MAX_CANVAS_WIDTH: "${SNAPSHOT_MAX_CANVAS_WIDTH:-}"
@@ -52,6 +58,7 @@ services:
     restart: unless-stopped
     depends_on:
       snapshot:
+        # 依赖 /health（存活）即可启动；就绪状态由 /ready 暴露给外层负载均衡。
         condition: service_healthy
     ports:
       - "${HTTP_PORT:-80}:80"

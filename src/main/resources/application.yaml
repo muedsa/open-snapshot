@@ -2,11 +2,17 @@ ktor:
   deployment:
     host: 0.0.0.0
     port: 8080
+    # 停机时先排水：停止接收新渲染请求，等待已接收请求收尾，超过上限后强制结束。
+    # Netty 至少会等待 shutdownGracePeriod，因此不要设置得远大于实际渲染耗时。
+    shutdownGracePeriod: 10000
+    shutdownTimeout: 15000
   application:
     modules:
+      - com.muedsa.snapshot.open.ObservabilityKt.configureLifecycle
       - com.muedsa.snapshot.open.HttpKt.configureHttp
       - com.muedsa.snapshot.open.SerializationKt.configureSerialization
       - com.muedsa.snapshot.open.RateLimitingKt.configureRateLimiting
+      - com.muedsa.snapshot.open.ObservabilityKt.configureObservability
       - com.muedsa.snapshot.open.RoutingKt.configureRouting
       - com.muedsa.snapshot.open.ImageCacheKt.configureImageCache
       - com.muedsa.snapshot.open.FontConfigKt.configureFonts
@@ -16,6 +22,12 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  access-log-enabled: true
+  access-log-skip-paths:
+    - /health
+    - /ready
+    - /metrics
+  metrics-enabled: true
   rate-limit:
     requests: 6
     window-ms: 60000

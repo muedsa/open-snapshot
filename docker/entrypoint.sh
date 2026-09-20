@@ -12,6 +12,18 @@ fi
 if [ -n "${SNAPSHOT_MAX_RENDER_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.max-render-timeout-ms=${SNAPSHOT_MAX_RENDER_TIMEOUT_MS}"
 fi
+if [ -n "${SNAPSHOT_ACCESS_LOG_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.access-log-enabled=${SNAPSHOT_ACCESS_LOG_ENABLED}"
+fi
+if [ -n "${SNAPSHOT_METRICS_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.metrics-enabled=${SNAPSHOT_METRICS_ENABLED}"
+fi
+if [ -n "${SNAPSHOT_SHUTDOWN_GRACE_MS:-}" ]; then
+    set -- "$@" "-P:ktor.deployment.shutdownGracePeriod=${SNAPSHOT_SHUTDOWN_GRACE_MS}"
+fi
+if [ -n "${SNAPSHOT_SHUTDOWN_TIMEOUT_MS:-}" ]; then
+    set -- "$@" "-P:ktor.deployment.shutdownTimeout=${SNAPSHOT_SHUTDOWN_TIMEOUT_MS}"
+fi
 if [ -n "${SNAPSHOT_RATE_LIMIT_REQUESTS:-}" ]; then
     set -- "$@" "-P:snapshot.rate-limit.requests=${SNAPSHOT_RATE_LIMIT_REQUESTS}"
 fi

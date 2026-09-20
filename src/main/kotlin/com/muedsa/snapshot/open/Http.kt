@@ -17,6 +17,8 @@ fun Application.configureHttp() {
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Accept)
+        exposeHeader("X-Request-Id")
+        exposeHeader(HttpHeaders.RetryAfter)
         allowNonSimpleContentTypes = true
         allowedHosts.forEach(::allowHost)
     }

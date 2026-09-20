@@ -54,13 +54,25 @@ private class LimitedNetworkImageCache(
     @Synchronized
     override fun getImage(url: String, noCache: Boolean): Image {
         if (!noCache) {
-            synchronized(memoryCache) { memoryCache[url]?.let { return it } }
+            val cached = synchronized(memoryCache) { memoryCache[url] }
+            if (cached != null) {
+                Metrics.imageCacheHits.inc()
+                return cached
+            }
+            Metrics.imageCacheMisses.inc()
         }
         check(requestCount < maxImageNum) {
             "Exceeded maximum number [$maxImageNum] of image http requests"
         }
         requestCount++
-        val image = Image.makeFromEncoded(download(url))
+        val encoded = try {
+            Metrics.imageDownloads.inc()
+            download(url)
+        } catch (error: Throwable) {
+            Metrics.imageDownloadFailures.inc()
+            throw error
+        }
+        val image = Image.makeFromEncoded(encoded)
         if (image.width > maxImageWidth || image.height > maxImageHeight) {
             image.close()
             throw IllegalArgumentException(
@@ -223,6 +235,9 @@ fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) 
 fun clearImageCache() {
     memoryImageCache?.let { synchronized(it) { it.clear() } }
 }
+
+/** 网络图片缓存是否已经初始化，供就绪检查使用。 */
+internal fun isImageCacheConfigured(): Boolean = memoryImageCache != null
 
 fun imageCacheInfo(): Pair<Int, Int> {
     val cache = memoryImageCache ?: return 0 to 0

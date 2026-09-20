@@ -21,11 +21,16 @@ curl -X POST http://localhost:8080/snapshot `
 
 | 接口 | 说明 |
 |---|---|
-| `GET /health` | 健康检查 |
+| `GET /health` | 存活检查：进程可响应即返回 `OK` |
+| `GET /ready` | 就绪检查：渲染链路可用且未在排水时返回 `READY`，否则 `503` + `NOT_READY` |
+| `GET /metrics` | Prometheus 文本指标（`text/plain; version=0.0.4`） |
 | `GET /fonts` | 返回可用字体列表（管理接口） |
 | `GET /fonts.png` | 返回字体预览图（管理接口） |
 | `GET /cacheInfo` | 查看网络图片缓存统计（管理接口） |
 | `POST /cacheClear` | 清理网络图片缓存（管理接口） |
+
+所有响应都会带有 `X-Request-Id`（调用方传入的合法值会被沿用，否则生成 UUID），错误响应体中的
+`requestId` 与之相同。
 
 管理接口默认不注册。启用时必须同时设置强随机令牌，并通过
 `Authorization: Bearer <token>` 访问：
@@ -40,11 +45,22 @@ SNAPSHOT_ADMIN_TOKEN=replace-with-a-long-random-token
 核心限制位于 `src/main/resources/application.yaml`：
 
 ```yaml
+ktor:
+  deployment:
+    shutdownGracePeriod: 10000
+    shutdownTimeout: 15000
+
 snapshot:
   trust-proxy-headers: false
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  access-log-enabled: true
+  access-log-skip-paths:
+    - /health
+    - /ready
+    - /metrics
+  metrics-enabled: true
   rate-limit:
     requests: 6
     window-ms: 60000
@@ -62,11 +78,81 @@ snapshot:
     allow-private-hosts: false
 ```
 
+配置在启动时校验，非法值会让服务直接启动失败，而不是运行中才暴露问题。
+
 发布前验证：
 
 ```bash
 ./gradlew test
 ./gradlew build
+```
+
+## 可观测性与运维
+
+### 存活与就绪
+
+- `/health` 只表示进程还活着，不触发重启以外的判断，容器 `HEALTHCHECK` 使用它；
+- `/ready` 会验证渲染链路：首次调用执行一次 1×1 冒烟渲染（解析 → 布局 → Skia → 编码），
+  并检查字体环境与网络图片缓存是否就绪，通过后缓存结果。
+
+因此负载均衡应使用 `/ready` 判断是否继续转发流量，用 `/health` 判断是否需要重启容器。
+
+### 优雅停机与排水
+
+应用监听 Ktor 的停机事件：
+
+1. 收到 `SIGTERM`（`docker stop`、Kubernetes 终止）后先进入排水状态；
+2. 排水期间 `/ready` 返回 `503 NOT_READY`，新的 `/snapshot` 请求返回 `503 SERVICE_UNAVAILABLE`
+   并带 `Retry-After: 5`，已在执行的渲染继续完成；
+3. 等待时间由 `ktor.deployment.shutdownGracePeriod` 决定，超时上限为
+   `ktor.deployment.shutdownTimeout`。
+
+Netty 引擎至少会等待 `shutdownGracePeriod`，所以不要把它设置得远大于实际渲染耗时。
+默认值为 10s + 15s，Compose 中对应 `stop_grace_period: 30s`。若调大了
+`snapshot.max-render-timeout-ms`，应同步调大排水时间与容器停止超时。
+
+由于 Netty 在停机开始时就会关闭监听端口，单实例部署仍可能出现连接失败。
+要做到零中断滚动更新，请运行两个及以上副本，并让负载均衡依据 `/ready` 摘除节点。
+
+### 访问日志
+
+`snapshot.access-log-enabled: true` 时每个请求输出一行结构化日志，探针路径默认不记录：
+
+```text
+event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=200 durationMs=19 bytes=93
+```
+
+日志只包含请求 ID、方法、路径、状态码、耗时和响应字节数，不记录 DSL 与图片地址；
+路径中的控制字符会被替换，避免日志注入。
+
+### 指标
+
+`GET /metrics` 输出 Prometheus 文本格式。`snapshot.metrics-enabled: false` 可以关闭该接口。
+
+| 指标 | 类型 | 说明 |
+|---|---|---|
+| `snapshot_ready` / `snapshot_draining` | gauge | 当前就绪与排水状态 |
+| `snapshot_uptime_seconds` | gauge | 进程运行时长 |
+| `snapshot_render_in_flight` | gauge | 正在执行的渲染数 |
+| `snapshot_renders_total{outcome}` | counter | 渲染结果：`success`、`empty_request`、`parse_error`、`render_error`、`image_error`、`too_large`、`timeout`、`rate_limited`、`unavailable`、`internal_error` |
+| `snapshot_render_duration_seconds` | histogram | 渲染耗时分布 |
+| `snapshot_render_output_bytes_total` | counter | 输出图片总字节数 |
+| `snapshot_http_requests_total{path,method,status}` | counter | 各路由请求数与状态码 |
+| `snapshot_http_request_duration_seconds{path}` | summary | 各路由请求耗时 |
+| `snapshot_image_cache_hits_total` / `snapshot_image_cache_misses_total` | counter | 网络图片缓存命中与未命中 |
+| `snapshot_image_downloads_total` / `snapshot_image_download_failures_total` | counter | 图片下载次数与失败次数 |
+| `snapshot_image_cache_entries` / `snapshot_image_cache_bytes` | gauge | 缓存图片数量与估算占用 |
+
+路径标签收敛在固定集合内（未知路径记为 `/other`），不会因外部输入产生高基数。
+
+Prometheus 抓取示例（容器拓扑下走内部网络，Nginx 默认对公网返回 404）：
+
+```yaml
+scrape_configs:
+  - job_name: open-snapshot
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["snapshot:8080"]
 ```
 
 ## Docker 部署
@@ -130,6 +216,10 @@ SNAPSHOT_MAX_CANVAS_PIXELS=8388608
 SNAPSHOT_MAX_IMAGE_NUM=5
 SNAPSHOT_MAX_CACHE_BYTES=134217728
 SNAPSHOT_ALLOW_PRIVATE_HOSTS=false
+SNAPSHOT_ACCESS_LOG_ENABLED=true
+SNAPSHOT_METRICS_ENABLED=true
+SNAPSHOT_SHUTDOWN_GRACE_MS=10000
+SNAPSHOT_SHUTDOWN_TIMEOUT_MS=15000
 ```
 
 配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。管理令牌可通过 `SNAPSHOT_ADMIN_TOKEN` 注入，不会被转换为 JVM 命令行参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
@@ -140,7 +230,11 @@ SNAPSHOT_ALLOW_PRIVATE_HOSTS=false
 - 每个客户端 IP 每分钟 6 个请求，允许瞬时突发 3 个；
 - 35 秒上游读取超时；
 - `X-Forwarded-*` 与 `X-Request-Id` 请求头；
-- `/health` 健康检查。
+- `/health` 与 `/ready` 探针转发（均不写访问日志）；
+- `/metrics` 对公网返回 404，仅供内部网络抓取。
+
+容器停机时 Docker 先发送 `SIGTERM`，Compose 通过 `stop_grace_period: 30s`
+为应用的排水窗口留出时间；Kubernetes 部署时请相应设置 `terminationGracePeriodSeconds`。
 
 应用默认不信任客户端传入的 Forwarded Header。Compose 会在应用端口仅对内部网络可见时设置
 `SNAPSHOT_TRUST_PROXY_HEADERS=true`，同时 Nginx 会覆盖而不是追加客户端提供的

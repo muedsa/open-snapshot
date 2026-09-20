@@ -7,14 +7,12 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.plugins.ratelimit.rateLimit
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import io.ktor.utils.io.readRemaining
 import kotlinx.io.readByteArray
 import java.security.MessageDigest
-import java.util.UUID
 
 private class RequestBodyTooLarge(val maxBytes: Long) : RuntimeException()
 
@@ -71,19 +69,32 @@ private fun Application.configureRoutingInternal(
 
         rateLimit(SnapshotRateLimit) {
             post("/snapshot") {
-                val requestId = call.request.headers["X-Request-Id"]?.takeIf { isValidRequestId(it) }
-                    ?: UUID.randomUUID().toString()
-                call.response.headers.append("X-Request-Id", requestId)
+                val requestId = call.ensureRequestIdHeader()
                 val startedAt = System.nanoTime()
+                if (call.application.serviceState().draining.get()) {
+                    Metrics.renderFailed("SERVICE_UNAVAILABLE")
+                    call.response.headers.append(HttpHeaders.RetryAfter, "5")
+                    respondApiError(call, ApiError(
+                        code = "SERVICE_UNAVAILABLE",
+                        message = "Service is shutting down",
+                        requestId = requestId,
+                        status = HttpStatusCode.ServiceUnavailable,
+                    ))
+                    return@post
+                }
                 try {
                     withTimeout(maxRenderTimeoutMs) {
                         val source = call.receiveLimitedText(maxRequestSize)
-                        renderSemaphore.withPermit {
-                            val result = SnapshotService.render(source, renderLimits)
-                            call.respondBytes(result.bytes, result.contentType)
+                        val result = withRenderSlot(renderSemaphore) {
+                            val renderStartedAt = System.nanoTime()
+                            val rendered = SnapshotService.render(source, renderLimits)
+                            Metrics.renderSucceeded(System.nanoTime() - renderStartedAt, rendered.bytes.size)
+                            rendered
                         }
+                        call.respondBytes(result.bytes, result.contentType)
                     }
                 } catch (error: RequestBodyTooLarge) {
+                    Metrics.renderFailed("REQUEST_TOO_LARGE")
                     respondApiError(call, ApiError(
                         code = "REQUEST_TOO_LARGE",
                         message = "Snapshot request body exceeds ${error.maxBytes} bytes",
@@ -91,6 +102,7 @@ private fun Application.configureRoutingInternal(
                         status = HttpStatusCode.PayloadTooLarge,
                     ))
                 } catch (error: TimeoutCancellationException) {
+                    Metrics.renderFailed("RENDER_TIMEOUT")
                     call.application.environment.log.warn(
                         "Snapshot request timed out requestId=$requestId elapsedNanos=${System.nanoTime() - startedAt}"
                     )
@@ -120,6 +132,7 @@ private fun Application.configureRoutingInternal(
                         status == HttpStatusCode.BadRequest -> "RENDER_ERROR"
                         else -> "INTERNAL_ERROR"
                     }
+                    Metrics.renderFailed(code)
                     call.application.environment.log.warn(
                         "Snapshot request failed requestId=$requestId elapsedNanos=${System.nanoTime() - startedAt}",
                         error,
@@ -147,7 +160,7 @@ private fun Application.configureRoutingInternal(
             get("/fonts.png") {
                 if (!call.authorizeAdmin(adminToken!!)) return@get
                 withTimeout(maxRenderTimeoutMs) {
-                    renderSemaphore.withPermit {
+                    withRenderSlot(renderSemaphore) {
                         call.respondBytes(FontService.drawFonts(), ContentType.Image.PNG)
                     }
                 }
@@ -175,7 +188,7 @@ private suspend fun io.ktor.server.application.ApplicationCall.receiveLimitedTex
     return bytes.toString(Charsets.UTF_8)
 }
 
-private suspend fun respondApiError(call: io.ktor.server.application.ApplicationCall, error: ApiError) {
+internal suspend fun respondApiError(call: io.ktor.server.application.ApplicationCall, error: ApiError) {
     call.respondText(error.toJson(), ContentType.Application.Json, error.status)
 }
 
@@ -192,9 +205,7 @@ private suspend fun io.ktor.server.application.ApplicationCall.authorizeAdmin(ex
         return true
     }
 
-    val requestId = request.headers["X-Request-Id"]?.takeIf(::isValidRequestId)
-        ?: UUID.randomUUID().toString()
-    response.headers.append("X-Request-Id", requestId)
+    val requestId = ensureRequestIdHeader()
     response.headers.append(HttpHeaders.WWWAuthenticate, "Bearer")
     respondApiError(this, ApiError(
         code = "UNAUTHORIZED",
@@ -205,5 +216,5 @@ private suspend fun io.ktor.server.application.ApplicationCall.authorizeAdmin(ex
     return false
 }
 
-private fun isValidRequestId(value: String): Boolean =
+internal fun isValidRequestId(value: String): Boolean =
     value.length in 1..128 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }

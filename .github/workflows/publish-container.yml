@@ -130,6 +130,19 @@ jobs:
           png_signature="$(od -An -tx1 -N8 /tmp/open-snapshot-smoke.png | tr -d ' \n')"
           test "$png_signature" = "89504e470d0a1a0a"
 
+          curl --fail --silent --show-error http://127.0.0.1:18080/ready
+
+          curl --fail --silent --show-error http://127.0.0.1:18080/metrics \
+            > /tmp/open-snapshot-metrics.txt
+          grep --quiet 'snapshot_renders_total{outcome="success"}' /tmp/open-snapshot-metrics.txt
+          grep --quiet 'snapshot_render_duration_seconds_count' /tmp/open-snapshot-metrics.txt
+
+          # 优雅停机：SIGTERM 后先进入排水阶段并输出生命周期日志。
+          docker stop --timeout 30 "$container_name"
+          docker logs "$container_name" > /tmp/open-snapshot-logs.txt 2>&1
+          grep --quiet 'phase=stop-preparing' /tmp/open-snapshot-logs.txt
+          grep --quiet 'phase=stopped' /tmp/open-snapshot-logs.txt
+
       - name: Build and publish image
         uses: docker/build-push-action@v6
         with:
