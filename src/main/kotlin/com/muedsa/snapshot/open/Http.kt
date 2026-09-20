@@ -6,10 +6,7 @@ import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.forwardedheaders.*
 
 fun Application.configureHttp() {
-    val allowedHosts = environment.config
-        .propertyOrNull("snapshot.cors.allowed-hosts")?.getList().orEmpty()
-    val trustProxyHeaders = environment.config
-        .propertyOrNull("snapshot.trust-proxy-headers")?.getString()?.toBooleanStrictOrNull() ?: false
+    val cors = snapshotConfig().cors
     install(CORS) {
         allowMethod(HttpMethod.Options)
         allowMethod(HttpMethod.Get)
@@ -17,12 +14,13 @@ fun Application.configureHttp() {
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Accept)
+        allowHeader(API_KEY_HEADER)
         exposeHeader("X-Request-Id")
         exposeHeader(HttpHeaders.RetryAfter)
         allowNonSimpleContentTypes = true
-        allowedHosts.forEach(::allowHost)
+        cors.allowedHosts.forEach(::allowHost)
     }
-    if (trustProxyHeaders) {
+    if (cors.trustProxyHeaders) {
         install(XForwardedHeaders)
     }
 }

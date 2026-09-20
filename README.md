@@ -107,6 +107,38 @@ curl -X POST http://localhost:8080/snapshot `
 所有响应都会带有 `X-Request-Id`（调用方传入的合法值会被沿用，否则生成 UUID），错误响应体中的
 `requestId` 与之相同。
 
+完整的接口定义见 [`docs/openapi.yaml`](docs/openapi.yaml)（OpenAPI 3.0，包含全部接口、错误码与响应示例）。
+
+### 可选 API Key 鉴权
+
+默认情况下 `/snapshot` 开放调用，仅受按来源 IP 的限流保护。需要限制调用方时，配置一个至少
+16 位的 API Key 即可启用鉴权：
+
+```dotenv
+SNAPSHOT_API_KEY=replace-with-a-long-random-key
+```
+
+启用后 `/snapshot` 必须携带以下任一种凭据，否则返回 `401 UNAUTHORIZED`：
+
+```bash
+curl -X POST http://localhost:8080/snapshot `
+  -H "X-API-Key: $SNAPSHOT_API_KEY" `
+  -H "Content-Type: text/plain" `
+  --data '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>' `
+  --output result.png
+```
+
+```bash
+curl -X POST http://localhost:8080/snapshot `
+  -H "Authorization: Bearer $SNAPSHOT_API_KEY" `
+  -H "Content-Type: text/plain" `
+  --data '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>' `
+  --output result.png
+```
+
+`/health`、`/ready`、`/metrics` 始终不需要凭据，便于探针与监控直接访问。密钥比较使用定长比较；
+建议通过 `SNAPSHOT_API_KEY` 注入而不是写入配置文件或命令行参数。
+
 管理接口默认不注册。启用时必须同时设置强随机令牌，并通过
 `Authorization: Bearer <token>` 访问：
 
@@ -130,6 +162,8 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  # 留空表示开放调用；填写后 /snapshot 需要 API Key。
+  api-key: ""
   access-log-enabled: true
   access-log-skip-paths:
     - /health
@@ -151,9 +185,24 @@ snapshot:
     max-image-height: 4096
     max-image-pixels: 16777216
     allow-private-hosts: false
+    connect-timeout-ms: 10000
+    read-timeout-ms: 10000
 ```
 
-配置在启动时校验，非法值会让服务直接启动失败，而不是运行中才暴露问题。
+配置只在一处解析（`SnapshotConfig`），并在启动时一次性校验：非法值会让服务启动失败，
+错误信息会同时列出全部问题，而不是修一个报一个。例如：
+
+```text
+Invalid snapshot configuration:
+  - snapshot.max-request-size must be a positive integer, but was '-1'
+  - snapshot.metrics-enabled must be 'true' or 'false', but was 'maybe'
+```
+
+几项容易踩错的约束：
+
+- `snapshot.api-key` 至少 16 位；
+- `snapshot.admin-endpoints-enabled=true` 时必须提供 `snapshot.admin-token` 或 `SNAPSHOT_ADMIN_TOKEN`；
+- 环境变量优先于配置文件：`SNAPSHOT_API_KEY`、`SNAPSHOT_ADMIN_TOKEN`。
 
 发布前验证：
 
@@ -299,13 +348,16 @@ SNAPSHOT_MAX_CANVAS_PIXELS=8388608
 SNAPSHOT_MAX_IMAGE_NUM=5
 SNAPSHOT_MAX_CACHE_BYTES=134217728
 SNAPSHOT_ALLOW_PRIVATE_HOSTS=false
+SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS=5000
+SNAPSHOT_IMAGE_READ_TIMEOUT_MS=10000
 SNAPSHOT_ACCESS_LOG_ENABLED=true
 SNAPSHOT_METRICS_ENABLED=true
 SNAPSHOT_SHUTDOWN_GRACE_MS=10000
 SNAPSHOT_SHUTDOWN_TIMEOUT_MS=15000
+SNAPSHOT_API_KEY=replace-with-a-long-random-key
 ```
 
-配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。管理令牌可通过 `SNAPSHOT_ADMIN_TOKEN` 注入，不会被转换为 JVM 命令行参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
+配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN` 与 `SNAPSHOT_API_KEY` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
 
 容器拓扑为 `Internet -> Nginx -> open-snapshot:8080`，应用端口不会直接暴露到宿主机。Nginx 默认包含：
 

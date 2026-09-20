@@ -13,7 +13,6 @@ import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.CallSetup
 import io.ktor.server.application.hooks.ResponseSent
 import io.ktor.server.application.install
-import io.ktor.server.config.tryGetStringList
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.server.response.respondText
@@ -175,13 +174,10 @@ fun Application.configureLifecycle() {
  * 探针路径默认不写访问日志，避免健康检查刷屏。
  */
 fun Application.configureObservability() {
-    val config = environment.config
-    val accessLogEnabled = config.propertyOrNull("snapshot.access-log-enabled")
-        ?.getString()?.toBooleanStrictOrNull() ?: true
-    val metricsEnabled = config.propertyOrNull("snapshot.metrics-enabled")
-        ?.getString()?.toBooleanStrictOrNull() ?: true
-    val accessLogSkipPaths = config.tryGetStringList("snapshot.access-log-skip-paths")?.toSet()
-        ?: setOf("/health", "/ready", "/metrics")
+    val config = snapshotConfig()
+    val accessLogEnabled = config.accessLog.enabled
+    val metricsEnabled = config.metricsEnabled
+    val accessLogSkipPaths = config.accessLog.skipPaths
     val logger = environment.log
 
     install(createApplicationPlugin("SnapshotObservability") {
@@ -197,7 +193,7 @@ fun Application.configureObservability() {
             val durationNanos = startedAtNanos?.let { System.nanoTime() - it } ?: -1L
             Metrics.observeHttp(call.request.httpMethod.value, path, status, durationNanos)
             if (status == HttpStatusCode.TooManyRequests.value && metricPathLabel(path) == "/snapshot") {
-                Metrics.renderFailed("RATE_LIMITED")
+                Metrics.renderFailed(ErrorCodes.RATE_LIMITED)
             }
             if (accessLogEnabled && path !in accessLogSkipPaths) {
                 logger.info(
@@ -230,7 +226,7 @@ fun Application.configureObservability() {
                 respondApiError(
                     call,
                     ApiError(
-                        code = "NOT_READY",
+                        code = ErrorCodes.NOT_READY,
                         message = report.reason ?: "Service is not ready",
                         requestId = call.snapshotRequestId(),
                         status = HttpStatusCode.ServiceUnavailable,

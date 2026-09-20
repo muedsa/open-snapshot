@@ -69,5 +69,13 @@ fi
 if [ -n "${SNAPSHOT_ALLOW_PRIVATE_HOSTS:-}" ]; then
     set -- "$@" "-P:snapshot.image.allow-private-hosts=${SNAPSHOT_ALLOW_PRIVATE_HOSTS}"
 fi
+if [ -n "${SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.image.connect-timeout-ms=${SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS}"
+fi
+if [ -n "${SNAPSHOT_IMAGE_READ_TIMEOUT_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.image.read-timeout-ms=${SNAPSHOT_IMAGE_READ_TIMEOUT_MS}"
+fi
+# SNAPSHOT_API_KEY 与 SNAPSHOT_ADMIN_TOKEN 一样，由应用直接读取环境变量，
+# 不转换为命令行参数，避免密钥出现在进程列表中。
 
 exec java -jar /app/open-snapshot.jar "$@"

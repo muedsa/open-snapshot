@@ -35,6 +35,10 @@ services:
       SNAPSHOT_MAX_IMAGE_HEIGHT: "${SNAPSHOT_MAX_IMAGE_HEIGHT:-}"
       SNAPSHOT_MAX_IMAGE_PIXELS: "${SNAPSHOT_MAX_IMAGE_PIXELS:-}"
       SNAPSHOT_ALLOW_PRIVATE_HOSTS: "${SNAPSHOT_ALLOW_PRIVATE_HOSTS:-}"
+      SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS: "${SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS:-}"
+      SNAPSHOT_IMAGE_READ_TIMEOUT_MS: "${SNAPSHOT_IMAGE_READ_TIMEOUT_MS:-}"
+      # 直接透传给 JVM 环境变量，不经过命令行参数，避免密钥出现在进程列表里。
+      SNAPSHOT_API_KEY: "${SNAPSHOT_API_KEY:-}"
     volumes:
       - "${SNAPSHOT_CONFIG_FILE:-./src/main/resources/application.yaml}:/app/config/application.yaml:ro"
     mem_limit: 2g

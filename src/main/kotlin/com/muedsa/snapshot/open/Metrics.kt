@@ -38,16 +38,16 @@ internal fun metricPathLabel(path: String): String =
 
 /** 把接口错误码映射为渲染统计的结果分类。 */
 internal fun renderOutcome(code: String): String = when (code) {
-    "EMPTY_REQUEST" -> "empty_request"
-    "PARSE_ERROR" -> "parse_error"
-    "IMAGE_LOAD_ERROR" -> "image_error"
-    "RENDER_ERROR" -> "render_error"
-    "REQUEST_TOO_LARGE" -> "too_large"
-    "RENDER_TIMEOUT" -> "timeout"
-    "RATE_LIMITED" -> "rate_limited"
-    "SERVICE_UNAVAILABLE" -> "unavailable"
-    "NOT_READY" -> "not_ready"
-    "UNAUTHORIZED" -> "unauthorized"
+    ErrorCodes.EMPTY_REQUEST -> "empty_request"
+    ErrorCodes.PARSE_ERROR -> "parse_error"
+    ErrorCodes.IMAGE_LOAD_ERROR -> "image_error"
+    ErrorCodes.RENDER_ERROR -> "render_error"
+    ErrorCodes.REQUEST_TOO_LARGE -> "too_large"
+    ErrorCodes.RENDER_TIMEOUT -> "timeout"
+    ErrorCodes.RATE_LIMITED -> "rate_limited"
+    ErrorCodes.SERVICE_UNAVAILABLE -> "unavailable"
+    ErrorCodes.NOT_READY -> "not_ready"
+    ErrorCodes.UNAUTHORIZED -> "unauthorized"
     else -> "internal_error"
 }
 
