@@ -11,6 +11,8 @@ internal object ErrorCodes {
     const val REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
     const val RENDER_TIMEOUT = "RENDER_TIMEOUT"
     const val RATE_LIMITED = "RATE_LIMITED"
+    const val QUEUE_FULL = "QUEUE_FULL"
+    const val QUEUE_TIMEOUT = "QUEUE_TIMEOUT"
     const val SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     const val NOT_READY = "NOT_READY"
     const val UNAUTHORIZED = "UNAUTHORIZED"
@@ -25,6 +27,8 @@ internal object ErrorCodes {
         REQUEST_TOO_LARGE,
         RENDER_TIMEOUT,
         RATE_LIMITED,
+        QUEUE_FULL,
+        QUEUE_TIMEOUT,
         SERVICE_UNAVAILABLE,
         NOT_READY,
         UNAUTHORIZED,

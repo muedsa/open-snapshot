@@ -34,8 +34,21 @@ private fun Application.configureRoutingInternal(
         "snapshot.admin-token (or SNAPSHOT_ADMIN_TOKEN) or an API key with admin: true " +
             "is required when admin endpoints are enabled"
     }
-    val renderExecutor = RenderExecutor(config.maxConcurrentRenders)
+    val renderExecutor = RenderExecutor(
+        maxConcurrentRenders = config.maxConcurrentRenders,
+        maxQueueSize = config.renderQueue.maxQueueSize,
+        queueTimeoutMs = config.renderQueue.queueTimeoutMs,
+    )
     monitor.subscribe(ApplicationStopped) { renderExecutor.close() }
+    renderResultCache = if (config.renderCache.enabled) {
+        RenderResultCache(
+            maxEntries = config.renderCache.maxEntries,
+            maxBytes = config.renderCache.maxBytes,
+            ttlMs = config.renderCache.ttlMs,
+        )
+    } else {
+        null
+    }
     val snapshotContext = SnapshotRouteContext(
         maxRequestSize = config.maxRequestSize,
         maxRenderTimeoutMs = config.maxRenderTimeoutMs,
@@ -84,12 +97,16 @@ private fun Application.configureRoutingInternal(
                 get("/cacheInfo") {
                     if (!call.requireAdmin()) return@get
                     val (count, bytes) = imageCacheInfo()
-                    call.respondText("count=$count\nbytes=$bytes")
+                    val (renderEntries, renderBytes) = renderCacheStats()
+                    call.respondText(
+                        "count=$count\nbytes=$bytes\nrenderEntries=$renderEntries\nrenderBytes=$renderBytes"
+                    )
                 }
 
                 post("/cacheClear") {
                     if (!call.requireAdmin()) return@post
                     clearImageCache()
+                    clearRenderCache()
                     call.respondText("OK")
                 }
             }

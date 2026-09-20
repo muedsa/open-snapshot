@@ -68,6 +68,20 @@ internal data class AccessLogSettings(
     val skipPaths: Set<String>,
 )
 
+/** 渲染结果缓存配置。 */
+internal data class RenderCacheSettings(
+    val enabled: Boolean,
+    val maxEntries: Int,
+    val maxBytes: Long,
+    val ttlMs: Long,
+)
+
+/** 渲染队列背压配置。 */
+internal data class RenderQueueSettings(
+    val maxQueueSize: Int,
+    val queueTimeoutMs: Long,
+)
+
 /**
  * 服务运行配置的唯一来源。
  *
@@ -82,6 +96,8 @@ internal class SnapshotConfig(
     val canvas: CanvasLimits,
     val image: ImageLimits,
     val rateLimit: RateLimitSettings,
+    val renderCache: RenderCacheSettings,
+    val renderQueue: RenderQueueSettings,
     val cors: CorsSettings,
     val admin: AdminSettings,
     /** 匿名调用方是否开放；由是否配置客户端凭据决定。 */
@@ -128,6 +144,17 @@ internal object SnapshotConfigLoader {
             val parsed = value.toLongOrNull()
             if (parsed == null || parsed <= 0) {
                 problems += "$path must be a positive integer, but was '$value'"
+                return default
+            }
+            return parsed
+        }
+
+        /** 允许 0 的整数，例如 `max-render-queue: 0` 表示不排队、直接拒绝。 */
+        fun nonNegativeInt(path: String, default: Int): Int {
+            val value = raw(path) ?: return default
+            val parsed = value.toIntOrNull()
+            if (parsed == null || parsed < 0) {
+                problems += "$path must be a non-negative integer, but was '$value'"
                 return default
             }
             return parsed
@@ -195,6 +222,19 @@ internal object SnapshotConfigLoader {
                 credentialWindowMs = positiveLong("snapshot.rate-limit.credential-window-ms", 60_000L),
                 adminRequests = positiveInt("snapshot.rate-limit.admin-requests", 6),
                 adminWindowMs = positiveLong("snapshot.rate-limit.admin-window-ms", 60_000L),
+            ),
+            renderCache = RenderCacheSettings(
+                enabled = boolean("snapshot.render-cache.enabled", true),
+                maxEntries = positiveInt("snapshot.render-cache.max-entries", 256),
+                maxBytes = positiveLong("snapshot.render-cache.max-bytes", 64L * 1024 * 1024),
+                ttlMs = positiveLong("snapshot.render-cache.ttl-ms", 60_000L),
+            ),
+            renderQueue = RenderQueueSettings(
+                maxQueueSize = nonNegativeInt("snapshot.max-render-queue", RenderExecutor.DEFAULT_MAX_QUEUE_SIZE),
+                queueTimeoutMs = positiveLong(
+                    "snapshot.render-queue-timeout-ms",
+                    RenderExecutor.DEFAULT_QUEUE_TIMEOUT_MS,
+                ),
             ),
             cors = CorsSettings(
                 allowedHosts = config.tryGetStringList("snapshot.cors.allowed-hosts").orEmpty(),

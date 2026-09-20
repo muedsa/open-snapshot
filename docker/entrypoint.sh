@@ -12,6 +12,21 @@ fi
 if [ -n "${SNAPSHOT_MAX_RENDER_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.max-render-timeout-ms=${SNAPSHOT_MAX_RENDER_TIMEOUT_MS}"
 fi
+if [ -n "${SNAPSHOT_MAX_RENDER_QUEUE:-}" ]; then
+    set -- "$@" "-P:snapshot.max-render-queue=${SNAPSHOT_MAX_RENDER_QUEUE}"
+fi
+if [ -n "${SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.render-queue-timeout-ms=${SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS}"
+fi
+if [ -n "${SNAPSHOT_RENDER_CACHE_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.render-cache.enabled=${SNAPSHOT_RENDER_CACHE_ENABLED}"
+fi
+if [ -n "${SNAPSHOT_RENDER_CACHE_MAX_ENTRIES:-}" ]; then
+    set -- "$@" "-P:snapshot.render-cache.max-entries=${SNAPSHOT_RENDER_CACHE_MAX_ENTRIES}"
+fi
+if [ -n "${SNAPSHOT_RENDER_CACHE_TTL_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.render-cache.ttl-ms=${SNAPSHOT_RENDER_CACHE_TTL_MS}"
+fi
 if [ -n "${SNAPSHOT_ACCESS_LOG_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.access-log-enabled=${SNAPSHOT_ACCESS_LOG_ENABLED}"
 fi

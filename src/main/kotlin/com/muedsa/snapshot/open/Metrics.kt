@@ -20,6 +20,8 @@ private const val NANOS_PER_SECOND = 1_000_000_000.0
 
 private val RENDER_DURATION_BUCKETS = doubleArrayOf(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
 
+private val QUEUE_WAIT_BUCKETS = doubleArrayOf(0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0)
+
 private val KNOWN_METRIC_PATHS = setOf(
     "/",
     "/snapshot",
@@ -45,6 +47,8 @@ internal fun renderOutcome(code: String): String = when (code) {
     ErrorCodes.REQUEST_TOO_LARGE -> "too_large"
     ErrorCodes.RENDER_TIMEOUT -> "timeout"
     ErrorCodes.RATE_LIMITED -> "rate_limited"
+    ErrorCodes.QUEUE_FULL -> "queue_full"
+    ErrorCodes.QUEUE_TIMEOUT -> "queue_timeout"
     ErrorCodes.SERVICE_UNAVAILABLE -> "unavailable"
     ErrorCodes.NOT_READY -> "not_ready"
     ErrorCodes.UNAUTHORIZED -> "unauthorized"
@@ -213,6 +217,18 @@ internal object Metrics {
         buckets = RENDER_DURATION_BUCKETS,
     )
 
+    val renderQueueWait = Histogram(
+        name = "snapshot_render_queue_wait_seconds",
+        help = "Time spent waiting for a free render slot, in seconds.",
+        buckets = QUEUE_WAIT_BUCKETS,
+    )
+
+    val renderQueueRejected = LabeledCounter(
+        name = "snapshot_render_queue_rejected_total",
+        help = "Requests rejected by render queue backpressure, by reason.",
+        labelNames = listOf("reason"),
+    )
+
     val imageCacheHits = Counter()
     val imageCacheMisses = Counter()
     val imageDownloads = Counter()
@@ -226,6 +242,16 @@ internal object Metrics {
 
     fun rateLimitExceeded(scope: String) {
         rateLimited.inc(listOf(scope))
+    }
+
+    fun renderQueueRejected(reason: String) {
+        renderQueueRejected.inc(listOf(reason))
+    }
+
+    fun observeRenderQueueWait(durationNanos: Long) {
+        if (durationNanos >= 0) {
+            renderQueueWait.observe(durationNanos / NANOS_PER_SECOND)
+        }
     }
 
     fun renderSucceeded(durationNanos: Long, outputBytes: Int) {
@@ -274,6 +300,47 @@ internal object Metrics {
         )
         append(renders.render())
         append(renderDuration.render())
+        append(renderQueueWait.render())
+        append(renderQueueRejected.render())
+        append(
+            renderGauge(
+                "snapshot_render_cache_hits_total",
+                "Render requests served from the render result cache.",
+                renderCacheHits(),
+                type = "counter",
+            )
+        )
+        append(
+            renderGauge(
+                "snapshot_render_cache_misses_total",
+                "Render requests not found in the render result cache.",
+                renderCacheMisses(),
+                type = "counter",
+            )
+        )
+        append(
+            renderGauge(
+                "snapshot_render_cache_evictions_total",
+                "Render cache entries evicted by the size limits.",
+                renderCacheEvictions(),
+                type = "counter",
+            )
+        )
+        val (renderCacheEntries, renderCacheBytes) = renderCacheStats()
+        append(
+            renderGauge(
+                "snapshot_render_cache_entries",
+                "Rendered results held in the render cache.",
+                renderCacheEntries.toLong(),
+            )
+        )
+        append(
+            renderGauge(
+                "snapshot_render_cache_bytes",
+                "Estimated bytes held in the render cache.",
+                renderCacheBytes,
+            )
+        )
         append(rateLimited.render())
         append(httpRequests.render())
         append(httpDuration.render())
