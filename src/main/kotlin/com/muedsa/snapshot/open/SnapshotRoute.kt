@@ -53,11 +53,27 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
         withTimeout(context.maxRenderTimeoutMs) {
             val body = receiveLimitedText(context.maxRequestSize)
             source = body
+
+            val cacheKey = if (isRenderCacheEnabled() && !bypassesRenderCache(body)) {
+                renderCacheKey(body)
+            } else {
+                null
+            }
+            if (cacheKey != null) {
+                renderResultCache?.get(cacheKey)?.let { cached ->
+                    respondBytes(cached.bytes, cached.contentType)
+                    return@withTimeout
+                }
+            }
+
             val result = context.renderExecutor.run {
                 val renderStartedAt = System.nanoTime()
                 val rendered = SnapshotService.render(body, context.renderLimits)
                 Metrics.renderSucceeded(System.nanoTime() - renderStartedAt, rendered.bytes.size)
                 rendered
+            }
+            if (cacheKey != null) {
+                renderResultCache?.put(cacheKey, result)
             }
             respondBytes(result.bytes, result.contentType)
         }
@@ -84,6 +100,30 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
                 message = "Snapshot rendering exceeded ${context.maxRenderTimeoutMs} ms",
                 requestId = requestId,
                 status = HttpStatusCode.GatewayTimeout,
+            ),
+        )
+    } catch (error: RenderQueueFullException) {
+        Metrics.renderFailed(ErrorCodes.QUEUE_FULL)
+        response.headers.append(HttpHeaders.RetryAfter, "1")
+        respondApiError(
+            this,
+            ApiError(
+                code = ErrorCodes.QUEUE_FULL,
+                message = "Render queue is full (${error.maxQueueSize} waiting), retry later",
+                requestId = requestId,
+                status = HttpStatusCode.ServiceUnavailable,
+            ),
+        )
+    } catch (error: RenderQueueTimeoutException) {
+        Metrics.renderFailed(ErrorCodes.QUEUE_TIMEOUT)
+        response.headers.append(HttpHeaders.RetryAfter, "1")
+        respondApiError(
+            this,
+            ApiError(
+                code = ErrorCodes.QUEUE_TIMEOUT,
+                message = "Waited longer than ${error.queueTimeoutMs} ms for a render slot",
+                requestId = requestId,
+                status = HttpStatusCode.ServiceUnavailable,
             ),
         )
     } catch (error: CancellationException) {

@@ -80,6 +80,8 @@ curl -X POST http://localhost:8080/snapshot `
 | `REQUEST_TOO_LARGE` | 413 | 请求体超过 `max-request-size` |
 | `RENDER_TIMEOUT` | 504 | 渲染超过 `max-render-timeout-ms` |
 | `RATE_LIMITED` | 429 | 触发限流（Ktor 限流插件直接返回 429，带 `Retry-After`） |
+| `QUEUE_FULL` | 503 | 等待渲染槽位的请求数超过 `max-render-queue`，带 `Retry-After` |
+| `QUEUE_TIMEOUT` | 503 | 排队等待超过 `render-queue-timeout-ms`，带 `Retry-After` |
 | `SERVICE_UNAVAILABLE` | 503 | 服务正在排水，不再接受新渲染 |
 | `NOT_READY` | 503 | `/ready` 探测未通过 |
 | `UNAUTHORIZED` | 401 | 管理接口缺少或提供了错误的 Bearer 令牌 |
@@ -88,8 +90,11 @@ curl -X POST http://localhost:8080/snapshot `
 #### 渲染执行模型
 
 - 渲染在专用线程池上执行，线程名为 `snapshot-render-*`，不会占用 Netty 连接处理线程；
-- 线程池大小与并发上限都由 `max-concurrent-renders` 决定，超出上限的请求排队等待；
+- 线程池大小与并发上限都由 `max-concurrent-renders` 决定；有空闲槽位时立即执行，
+  否则进入等待队列（上限 `max-render-queue`，等待上限 `render-queue-timeout-ms`）；
+- 队列已满返回 `503 QUEUE_FULL`，排队超时返回 `503 QUEUE_TIMEOUT`，两者都带 `Retry-After`；
 - `max-render-timeout-ms` 是排队加渲染的总预算；阻塞式渲染无法被中途打断，超时会在渲染返回后生效；
+- 相同 DSL 的重复请求可由渲染结果缓存直接返回，不占用渲染槽位；
 - 网络图片缓存按 URL 去重，同一地址的并发请求只下载与解码一次。
 
 ### 其他接口
@@ -101,8 +106,8 @@ curl -X POST http://localhost:8080/snapshot `
 | `GET /metrics` | Prometheus 文本指标（`text/plain; version=0.0.4`） |
 | `GET /fonts` | 返回可用字体列表（管理接口） |
 | `GET /fonts.png` | 返回字体预览图（管理接口） |
-| `GET /cacheInfo` | 查看网络图片缓存统计（管理接口） |
-| `POST /cacheClear` | 清理网络图片缓存（管理接口） |
+| `GET /cacheInfo` | 查看网络图片缓存与渲染结果缓存统计（管理接口） |
+| `POST /cacheClear` | 清理网络图片缓存与渲染结果缓存（管理接口） |
 
 所有响应都会带有 `X-Request-Id`（调用方传入的合法值会被沿用，否则生成 UUID），错误响应体中的
 `requestId` 与之相同。
@@ -201,6 +206,15 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  # 渲染队列背压：0 表示不排队、直接拒绝
+  max-render-queue: 32
+  render-queue-timeout-ms: 5000
+  # 渲染结果缓存：相同 DSL 直接返回上次输出
+  render-cache:
+    enabled: true
+    max-entries: 256
+    max-bytes: 67108864
+    ttl-ms: 60000
   # 留空表示开放调用；填写后 /snapshot 需要 API Key，多 Key 见 api-keys 列表。
   api-key: ""
   access-log-enabled: true
@@ -306,6 +320,11 @@ event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=2
 | `snapshot_ready` / `snapshot_draining` | gauge | 当前就绪与排水状态 |
 | `snapshot_uptime_seconds` | gauge | 进程运行时长 |
 | `snapshot_render_in_flight` | gauge | 正在执行的渲染数 |
+| `snapshot_render_pending` | gauge | 等待渲染槽位的请求数 |
+| `snapshot_render_queue_wait_seconds` | histogram | 排队等待槽位的耗时分布 |
+| `snapshot_render_queue_rejected_total{reason}` | counter | 背压拒绝数，`reason` 为 `full` 或 `timeout` |
+| `snapshot_render_cache_hits_total` / `_misses_total` / `_evictions_total` | counter | 渲染结果缓存命中、未命中与淘汰 |
+| `snapshot_render_cache_entries` / `_bytes` | gauge | 渲染结果缓存条目数与占用字节 |
 | `snapshot_renders_total{outcome}` | counter | 渲染结果：`success`、`empty_request`、`parse_error`、`render_error`、`image_error`、`too_large`、`timeout`、`rate_limited`、`unavailable`、`internal_error` |
 | `snapshot_render_duration_seconds` | histogram | 渲染耗时分布 |
 | `snapshot_render_output_bytes_total` | counter | 输出图片总字节数 |
@@ -335,6 +354,27 @@ scrape_configs:
   Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner 回收本地内存；
 - 同一 URL 的并发请求只下载与解码一次，其余调用共享同一结果；
 - 每张图片仍受单图大小、解码宽高、像素数与私网地址限制，单次渲染请求数受 `max-image-num-once` 限制。
+
+### 渲染结果缓存与背压
+
+渲染结果缓存把「相同 DSL」的重复请求直接变成一次内存读取，跳过解析、布局与光栅化，也不占用渲染槽位：
+
+- 键为 DSL 文本的 SHA-256；`render-cache.enabled` 可整体关闭；
+- 同时受 `max-entries` 与 `max-bytes` 约束，按 LRU 淘汰；
+- `ttl-ms` 到期后重新渲染：DSL 中引用的网络图片内容可能变化；
+- DSL 中出现 `noCache="true"` 时跳过缓存，尊重调用方要最新图片的意图；
+- `POST /cacheClear` 会同时清空图片缓存与渲染结果缓存，`GET /cacheInfo` 返回两者的条目与字节数；
+- 命中情况见 `snapshot_render_cache_hits_total` / `_misses_total` / `_evictions_total` 与 `_entries` / `_bytes`。
+
+队列背压让过载表现为快速失败而不是请求堆积：
+
+- `max-render-queue`：等待渲染槽位的请求数上限，超出返回 `503 QUEUE_FULL`；设为 `0` 表示不排队；
+- `render-queue-timeout-ms`：排队等待上限，超出返回 `503 QUEUE_TIMEOUT`；
+- 两者都带 `Retry-After`，并计入 `snapshot_render_queue_rejected_total{reason="full|timeout"}`；
+- 排队耗时分布见 `snapshot_render_queue_wait_seconds`，当前等待数见 `snapshot_render_pending`。
+
+容量建议：`max-concurrent-renders` 按 CPU 核数设置，`max-render-queue` 取并发数的 4–8 倍，
+`render-queue-timeout-ms` 不超过调用方可接受的延迟（例如 1–5 秒）。
 
 ## Docker 部署
 
@@ -408,6 +448,9 @@ SNAPSHOT_API_KEYS=web-frontend:key-0123456789abcdef,partner-a:key-fedcba98765432
 SNAPSHOT_METRICS_ACCESS=open
 SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS=120
 SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS=4
+SNAPSHOT_MAX_RENDER_QUEUE=16
+SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS=3000
+SNAPSHOT_RENDER_CACHE_TTL_MS=300000
 ```
 
 配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名、字体族与 `api-keys` 列表属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN`、`SNAPSHOT_API_KEY` 与 `SNAPSHOT_API_KEYS` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。

@@ -99,7 +99,11 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
-          description: 服务正在排水，不再接受新的渲染请求。
+          description: |
+            服务暂时无法接收渲染请求，`code` 取值：
+            `SERVICE_UNAVAILABLE`（正在排水）、`QUEUE_FULL`（等待渲染槽位的请求数超过
+            `snapshot.max-render-queue`）、`QUEUE_TIMEOUT`（等待超过
+            `snapshot.render-queue-timeout-ms`）。后两者带 `Retry-After`。
           headers:
             Retry-After:
               $ref: "#/components/headers/RetryAfter"
@@ -109,10 +113,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
-              example:
-                code: SERVICE_UNAVAILABLE
-                message: Service is shutting down
-                requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
+              examples:
+                draining:
+                  value:
+                    code: SERVICE_UNAVAILABLE
+                    message: Service is shutting down
+                    requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
+                queueFull:
+                  value:
+                    code: QUEUE_FULL
+                    message: Render queue is full (32 waiting), retry later
+                    requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
+                queueTimeout:
+                  value:
+                    code: QUEUE_TIMEOUT
+                    message: Waited longer than 5000 ms for a render slot
+                    requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
         "504":
           description: 渲染超过 `snapshot.max-render-timeout-ms`。
           headers:
@@ -382,6 +398,8 @@ components:
             - REQUEST_TOO_LARGE
             - RENDER_TIMEOUT
             - RATE_LIMITED
+            - QUEUE_FULL
+            - QUEUE_TIMEOUT
             - SERVICE_UNAVAILABLE
             - NOT_READY
             - UNAUTHORIZED
