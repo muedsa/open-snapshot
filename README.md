@@ -15,7 +15,82 @@ curl -X POST http://localhost:8080/snapshot `
   --output result.png
 ```
 
-错误响应为 JSON，并包含 `code`、`message` 和 `requestId` 字段。服务支持空输入、请求体大小、并发渲染和网络图片资源限制。
+根标签 `<Snapshot>` 的属性：
+
+| 属性 | 说明 |
+|---|---|
+| `type` | 输出格式：`png`（默认）、`jpg`、`webp`，其他值会被解析器拒绝 |
+| `background` | 画布背景色，`#AARRGGBB` |
+| `debug` | 绘制布局辅助信息，默认 `false`，需显式写 `debug="true"` |
+
+画布尺寸由 DSL 内容布局决定，并受 `max-canvas-width`、`max-canvas-height`、`max-canvas-pixels` 限制。
+
+#### 请求示例
+
+容器与文本：
+
+```html
+<Snapshot type="png" background="#FF102030">
+    <Column>
+        <Row>
+            <Container color="#FF0000" width="200" height="200"/>
+            <Container color="#FFFFFF" width="200" height="200">
+                <Text color="#0000FF" fontSize="20">hello snapshot 🤣</Text>
+            </Container>
+        </Row>
+    </Column>
+</Snapshot>
+```
+
+网络图片（受数量、单图大小、解码尺寸与私网拦截限制）：
+
+```html
+<Snapshot type="webp">
+    <Image width="200" height="200" url="https://example.com/cover.png" fit="COVER" noCache="true"/>
+</Snapshot>
+```
+
+`fit` 可选 `FILL`、`CONTAIN`、`COVER`、`FIT_WIDTH`、`FIT_HEIGHT`、`NONE`、`SCALE_DOWN`。
+`noCache="true"` 会跳过缓存，默认 `false`（布尔属性必须写出值，裸写属性会回落到默认值）。
+
+指定字体族，避免中文或 Emoji 缺字（多个字体用英文逗号分隔，且**不能带空格**）：
+
+```html
+<Snapshot type="png">
+    <Text fontSize="24" fontFamily="Noto Serif SC,Noto Color Emoji">原神，启动！🤣</Text>
+</Snapshot>
+```
+
+更多标签与属性见 snapshot 框架的[使用说明](https://github.com/muedsa/snapshot)（`docs/usage`）。
+
+#### 错误响应
+
+错误统一为 JSON，并带同样的 `requestId`：
+
+```json
+{"code":"PARSE_ERROR","message":"...","requestId":"..."}
+```
+
+| `code` | HTTP | 说明 |
+|---|---|---|
+| `EMPTY_REQUEST` | 400 | 请求体为空或只有空白字符 |
+| `PARSE_ERROR` | 400 | DSL 语法错误，`message` 含出错位置与附近的源码片段 |
+| `RENDER_ERROR` | 400 | 超出画布限制或布局失败 |
+| `IMAGE_LOAD_ERROR` | 400 | 图片地址非法、非 HTTP(S)、私网地址、超时或格式错误 |
+| `REQUEST_TOO_LARGE` | 413 | 请求体超过 `max-request-size` |
+| `RENDER_TIMEOUT` | 504 | 渲染超过 `max-render-timeout-ms` |
+| `RATE_LIMITED` | 429 | 触发限流（Ktor 限流插件直接返回 429，带 `Retry-After`） |
+| `SERVICE_UNAVAILABLE` | 503 | 服务正在排水，不再接受新渲染 |
+| `NOT_READY` | 503 | `/ready` 探测未通过 |
+| `UNAUTHORIZED` | 401 | 管理接口缺少或提供了错误的 Bearer 令牌 |
+| `INTERNAL_ERROR` | 500 | 未预期的内部错误，`message` 不包含内部细节 |
+
+#### 渲染执行模型
+
+- 渲染在专用线程池上执行，线程名为 `snapshot-render-*`，不会占用 Netty 连接处理线程；
+- 线程池大小与并发上限都由 `max-concurrent-renders` 决定，超出上限的请求排队等待；
+- `max-render-timeout-ms` 是排队加渲染的总预算；阻塞式渲染无法被中途打断，超时会在渲染返回后生效；
+- 网络图片缓存按 URL 去重，同一地址的并发请求只下载与解码一次。
 
 ### 其他接口
 
@@ -154,6 +229,14 @@ scrape_configs:
     static_configs:
       - targets: ["snapshot:8080"]
 ```
+
+### 网络图片缓存
+
+- 全局 LRU 缓存同时受 `memory-cache-num-limit`（数量）与 `max-cache-bytes`（总字节）约束；
+- 淘汰与清空只丢弃引用，不会关闭可能正被其他并发渲染绘制的图片：
+  Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner 回收本地内存；
+- 同一 URL 的并发请求只下载与解码一次，其余调用共享同一结果；
+- 每张图片仍受单图大小、解码宽高、像素数与私网地址限制，单次渲染请求数受 `max-image-num-once` 限制。
 
 ## Docker 部署
 

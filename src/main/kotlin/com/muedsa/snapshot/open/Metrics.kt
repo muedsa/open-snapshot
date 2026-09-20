@@ -185,6 +185,7 @@ internal object Metrics {
     val ready = Gauge()
     val draining = Gauge()
     val renderInFlight = Gauge()
+    val renderPending = Gauge()
     val renderOutputBytes = Counter()
 
     val renders = LabeledCounter(
@@ -245,6 +246,13 @@ internal object Metrics {
             )
         )
         append(renderGauge("snapshot_render_in_flight", "Snapshot renders currently executing.", renderInFlight.value()))
+        append(
+            renderGauge(
+                "snapshot_render_pending",
+                "Requests waiting for a free render slot.",
+                renderPending.value(),
+            )
+        )
         append(
             renderGauge(
                 "snapshot_render_output_bytes_total",

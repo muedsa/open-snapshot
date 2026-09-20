@@ -6,7 +6,6 @@ import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.plugins.ratelimit.rateLimit
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -56,7 +55,8 @@ private fun Application.configureRoutingInternal(
     require(!adminEndpointsEnabled || adminToken != null) {
         "SNAPSHOT_ADMIN_TOKEN or snapshot.admin-token is required when admin endpoints are enabled"
     }
-    val renderSemaphore = Semaphore(maxConcurrentRenders)
+    val renderExecutor = RenderExecutor(maxConcurrentRenders)
+    monitor.subscribe(ApplicationStopped) { renderExecutor.close() }
 
     routing {
         get("/health") {
@@ -82,12 +82,14 @@ private fun Application.configureRoutingInternal(
                     ))
                     return@post
                 }
+                var source: String? = null
                 try {
                     withTimeout(maxRenderTimeoutMs) {
-                        val source = call.receiveLimitedText(maxRequestSize)
-                        val result = withRenderSlot(renderSemaphore) {
+                        val body = call.receiveLimitedText(maxRequestSize)
+                        source = body
+                        val result = renderExecutor.run {
                             val renderStartedAt = System.nanoTime()
-                            val rendered = SnapshotService.render(source, renderLimits)
+                            val rendered = SnapshotService.render(body, renderLimits)
                             Metrics.renderSucceeded(System.nanoTime() - renderStartedAt, rendered.bytes.size)
                             rendered
                         }
@@ -115,7 +117,11 @@ private fun Application.configureRoutingInternal(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    val sourceMessage = error.message ?: error::class.simpleName ?: "Snapshot rendering failed"
+                    val sourceMessage = when {
+                        // 解析失败时补充出错位置与附近源码，便于定位 DSL 问题。
+                        error is com.muedsa.snapshot.parser.ParseException -> SnapshotService.formatError(error, source.orEmpty())
+                        else -> error.message ?: error::class.simpleName ?: "Snapshot rendering failed"
+                    }
                     val status = if (
                         error is com.muedsa.snapshot.parser.ParseException ||
                         error is IllegalArgumentException ||
@@ -160,9 +166,8 @@ private fun Application.configureRoutingInternal(
             get("/fonts.png") {
                 if (!call.authorizeAdmin(adminToken!!)) return@get
                 withTimeout(maxRenderTimeoutMs) {
-                    withRenderSlot(renderSemaphore) {
-                        call.respondBytes(FontService.drawFonts(), ContentType.Image.PNG)
-                    }
+                    val preview = renderExecutor.run { FontService.drawFonts() }
+                    call.respondBytes(preview, ContentType.Image.PNG)
                 }
             }
 
