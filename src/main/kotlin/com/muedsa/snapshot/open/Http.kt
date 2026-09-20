@@ -20,6 +20,8 @@ fun Application.configureHttp() {
         exposeHeader("X-RateLimit-Limit")
         exposeHeader("X-RateLimit-Remaining")
         exposeHeader("X-RateLimit-Reset")
+        // 浏览器 JS 需要显式暴露才能读取耗时头。
+        TIMING_EXPOSED_HEADERS.forEach(::exposeHeader)
         allowNonSimpleContentTypes = true
         cors.allowedHosts.forEach(::allowHost)
     }

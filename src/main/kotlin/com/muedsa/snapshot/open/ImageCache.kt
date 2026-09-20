@@ -199,18 +199,26 @@ internal class LimitedNetworkImageCache(
         }
         requestCount++
 
-        val loaded = SharedImageLoader.load(url) { loadImage(url, stale) }
-        if (!noCache) {
-            if (loaded.reused) {
-                // 304：刷新过期时间；条目若已被淘汰则重新写回。
-                if (!memoryCache.refresh(url)) {
+        // 记录本请求在图片获取上的墙钟时间：包含等待同一 URL 的并发下载结果。
+        val fetchStartedAt = System.nanoTime()
+        var downloaded = false
+        try {
+            val loaded = SharedImageLoader.load(url) { loadImage(url, stale) }
+            downloaded = !loaded.reused
+            if (!noCache) {
+                if (loaded.reused) {
+                    // 304：刷新过期时间；条目若已被淘汰则重新写回。
+                    if (!memoryCache.refresh(url)) {
+                        memoryCache.putImage(url, loaded.image, loaded.etag)
+                    }
+                } else {
                     memoryCache.putImage(url, loaded.image, loaded.etag)
                 }
-            } else {
-                memoryCache.putImage(url, loaded.image, loaded.etag)
             }
+            return loaded.image
+        } finally {
+            CurrentRenderStats.get()?.addImageFetch(System.nanoTime() - fetchStartedAt, downloaded)
         }
-        return loaded.image
     }
 
     private fun loadImage(url: String, stale: MemoryImageCache.Entry?): LoadedImage {

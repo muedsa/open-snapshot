@@ -8,6 +8,48 @@ import kotlinx.coroutines.withTimeout
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
+/** 单次请求的耗时分段：排队、渲染与远程图片获取。 */
+internal class RenderTimings {
+    /** 等待渲染槽位的耗时；-1 表示没有等待（直接拿到槽位）。 */
+    @Volatile
+    var queueNanos: Long = -1L
+
+    /** 纯渲染耗时；-1 表示没有执行渲染（命中缓存、解析失败等）。 */
+    @Volatile
+    var renderNanos: Long = -1L
+
+    /** 本请求在远程图片上消耗的墙钟时间（含等待并发去重结果）。 */
+    @Volatile
+    var imageFetchNanos: Long = 0L
+
+    /** 本请求真正发起的图片下载次数（304 复用不计入）。 */
+    @Volatile
+    var imageDownloads: Int = 0
+
+    fun addImageFetch(nanos: Long, downloaded: Boolean) {
+        imageFetchNanos += nanos
+        if (downloaded) imageDownloads++
+    }
+}
+
+/**
+ * 把当前请求的 [RenderTimings] 绑定到执行渲染的线程上。
+ *
+ * 渲染是单线程阻塞执行、图片加载都发生在同一线程内，因此 ThreadLocal 足以按请求聚合；
+ * 生命周期完全由 [RenderExecutor] 管理，不跨请求泄漏。
+ */
+internal object CurrentRenderStats {
+    private val holder = ThreadLocal<RenderTimings?>()
+
+    fun get(): RenderTimings? = holder.get()
+
+    fun set(timings: RenderTimings?) {
+        if (timings == null) holder.remove() else holder.set(timings)
+    }
+
+    fun clear() = holder.remove()
+}
+
 /** 等待渲染槽位的请求数超过队列上限。 */
 internal class RenderQueueFullException(val maxQueueSize: Int) : RuntimeException()
 
@@ -38,25 +80,28 @@ internal class RenderExecutor(
     private val slots = Semaphore(maxConcurrentRenders)
     private val waiting = AtomicInteger()
 
-    suspend fun <T> run(block: () -> T): T {
+    suspend fun <T> run(timings: RenderTimings? = null, block: () -> T): T {
         // 空闲槽位直接取用，不受队列上限影响；只有真正需要排队时才计入队列。
         if (!slots.tryAcquire()) {
+            val waitStartedAt = System.nanoTime()
             val waitingNow = waiting.incrementAndGet()
             if (waitingNow > maxQueueSize) {
+                timings?.queueNanos = System.nanoTime() - waitStartedAt
                 Metrics.renderPending.set(waiting.decrementAndGet().toLong().coerceAtLeast(0L))
                 Metrics.renderQueueRejected(REJECT_REASON_QUEUE_FULL)
                 throw RenderQueueFullException(maxQueueSize)
             }
 
             Metrics.renderPending.set(waitingNow.toLong())
-            val waitStartedAt = System.nanoTime()
             try {
                 withTimeout(queueTimeoutMs) { slots.acquire() }
             } catch (error: TimeoutCancellationException) {
                 Metrics.renderQueueRejected(REJECT_REASON_QUEUE_TIMEOUT)
                 throw RenderQueueTimeoutException(queueTimeoutMs)
             } finally {
-                Metrics.observeRenderQueueWait(System.nanoTime() - waitStartedAt)
+                val waited = System.nanoTime() - waitStartedAt
+                timings?.queueNanos = waited
+                Metrics.observeRenderQueueWait(waited)
                 Metrics.renderPending.set(waiting.decrementAndGet().toLong().coerceAtLeast(0L))
             }
         }
@@ -64,7 +109,14 @@ internal class RenderExecutor(
         try {
             Metrics.renderInFlight.inc()
             try {
-                return withContext(dispatcher) { block() }
+                return withContext(dispatcher) {
+                    CurrentRenderStats.set(timings)
+                    try {
+                        block()
+                    } finally {
+                        CurrentRenderStats.clear()
+                    }
+                }
             } finally {
                 Metrics.renderInFlight.dec()
             }

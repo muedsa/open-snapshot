@@ -67,6 +67,12 @@ paths:
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
+            Server-Timing:
+              $ref: "#/components/headers/ServerTiming"
+            X-Snapshot-Cache:
+              $ref: "#/components/headers/SnapshotCache"
+            X-Snapshot-Image-Count:
+              $ref: "#/components/headers/SnapshotImageCount"
           content:
             image/png:
               schema:
@@ -369,6 +375,25 @@ components:
       schema:
         type: string
         example: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
+    ServerTiming:
+      description: |
+        标准耗时头，单位为毫秒、保留 1 位小数。
+        段含义：`queue`（等待渲染槽位）、`render`（纯渲染）、`image`（远程图片获取，含等待同 URL 并发去重）、
+        `cache;desc=hit`（渲染结果缓存命中）、`total`（服务端处理总耗时）。
+        未发生的阶段不会出现；`429` 由限流插件在进入路由前产生，不带该头。
+      schema:
+        type: string
+        example: queue;dur=0.3, render;dur=12.4, total;dur=14.2
+    SnapshotCache:
+      description: 渲染结果缓存是否命中（`hit` / `miss`）。
+      schema:
+        type: string
+        enum: [hit, miss]
+    SnapshotImageCount:
+      description: 本请求真正发起的远程图片下载次数（304 复用不计入）。
+      schema:
+        type: integer
+        example: 2
     RetryAfter:
       description: 建议的重试等待时间（秒）。
       schema:
