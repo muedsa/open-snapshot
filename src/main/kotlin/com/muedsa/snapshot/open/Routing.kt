@@ -88,9 +88,40 @@ private fun Application.configureRoutingInternal(
 
                 get("/fonts.png") {
                     if (!call.requireAdmin()) return@get
+                    val requestedFamilies = call.request.queryParameters.getAll("family")
+                        .orEmpty()
+                        .flatMap { it.split(',') }
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                    val offset = call.nonNegativeQuery("offset") ?: return@get
+                    val limit = call.nonNegativeQuery("limit") ?: return@get
+
+                    val selection = selectFontFamilies(
+                        available = FontService.familyNames(),
+                        requested = requestedFamilies,
+                        offset = offset,
+                        limit = limit,
+                    )
+                    if (selection.unknown.isNotEmpty()) {
+                        respondApiError(call, ApiError(
+                            code = ErrorCodes.FONT_NOT_FOUND,
+                            message = "Unknown font families: ${selection.unknown.joinToString(", ")}",
+                            requestId = call.ensureRequestIdHeader(),
+                            status = HttpStatusCode.BadRequest,
+                        ))
+                        return@get
+                    }
+
                     withTimeout(snapshotContext.maxRenderTimeoutMs) {
-                        val preview = renderExecutor.run { FontService.drawFonts() }
-                        call.respondBytes(preview, ContentType.Image.PNG)
+                        val cacheKey = fontPreviewCacheKey(selection.selected, offset, limit)
+                        renderResultCache?.get(cacheKey)?.let { cached ->
+                            call.respondBytes(cached.bytes, cached.contentType)
+                            return@withTimeout
+                        }
+                        val preview = renderExecutor.run { FontService.drawFonts(selection.selected) }
+                        val result = SnapshotResult(preview, ContentType.Image.PNG)
+                        renderResultCache?.put(cacheKey, result)
+                        call.respondBytes(result.bytes, result.contentType)
                     }
                 }
 
@@ -117,6 +148,28 @@ private fun Application.configureRoutingInternal(
 internal suspend fun respondApiError(call: io.ktor.server.application.ApplicationCall, error: ApiError) {
     call.respondText(error.toJson(), ContentType.Application.Json, error.status)
 }
+
+/**
+ * 读取非负整数查询参数；缺省为 0，非法值直接返回 `400 INVALID_QUERY` 并返回 null。
+ */
+private suspend fun io.ktor.server.application.ApplicationCall.nonNegativeQuery(name: String): Int? {
+    val raw = request.queryParameters[name] ?: return 0
+    val parsed = raw.trim().toIntOrNull()
+    if (parsed == null || parsed < 0) {
+        respondApiError(this, ApiError(
+            code = ErrorCodes.INVALID_QUERY,
+            message = "Query parameter '$name' must be a non-negative integer, but was '$raw'",
+            requestId = ensureRequestIdHeader(),
+            status = HttpStatusCode.BadRequest,
+        ))
+        return null
+    }
+    return parsed
+}
+
+/** 字体预览缓存的键：与渲染结果缓存共用存储，但用前缀与 DSL 键区分。 */
+internal fun fontPreviewCacheKey(families: List<String>, offset: Int, limit: Int): String =
+    "fonts-preview\u0000$offset\u0000$limit\u0000${families.joinToString(",")}"
 
 internal fun isValidRequestId(value: String): Boolean =
     value.length in 1..128 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }

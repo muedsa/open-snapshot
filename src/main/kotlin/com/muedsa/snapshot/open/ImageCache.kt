@@ -13,31 +13,122 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 
+/** 图片加载失败（协议、地址、HTTP 状态、大小、超时、解码等）。 */
+internal class ImageLoadException(
+    message: String,
+    cause: Throwable? = null,
+    /** 瞬时故障（5xx、超时、IO）可以重试；4xx 等确定性失败不重试。 */
+    val transient: Boolean = false,
+) : RuntimeException(message, cause)
+
+/** 条件请求的两种结果，用于指标标签。 */
+internal const val REVALIDATION_NOT_MODIFIED = "not_modified"
+internal const val REVALIDATION_UPDATED = "updated"
+
 /**
- * 全局内存图片缓存（按访问顺序的 LRU）。
+ * 全局内存图片缓存（按访问顺序的 LRU，带 TTL 与 ETag）。
  *
  * 淘汰与清空只丢弃引用、不调用 `Image.close()`：缓存里的图片可能正被另一个并发渲染绘制，
  * 关闭它会让对方拿到已释放的本地对象。Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner
  * 释放本地内存，因此丢弃引用即可安全回收。
+ *
+ * `ttlMs` 为 0 表示永不过期；否则过期条目会保留并使用 `ETag` 做条件请求复用。
  */
 internal class MemoryImageCache(
     private val limit: Int,
     private val maxBytes: Long,
-) : LinkedHashMap<String, Image>(16, 0.75f, true) {
-    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Image>?): Boolean = size > limit
+    private val ttlMs: Long = 0L,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    internal class Entry(
+        val image: Image,
+        val etag: String?,
+        val sizeBytes: Long,
+        var expiresAtMillis: Long,
+    )
 
-    fun putImage(url: String, image: Image): Boolean {
-        if (image.imageInfo.computeMinByteSize().toLong() > maxBytes) return false
-        super.put(url, image)
-        while (size > limit || totalBytes() > maxBytes) {
-            val eldestKey = keys.firstOrNull() ?: break
-            if (eldestKey == url) break
-            remove(eldestKey)
+    private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
+    private var totalBytes = 0L
+    private var evictions = 0L
+    private var expirations = 0L
+
+    val keys: Set<String> get() = synchronized(this) { entries.keys.toSet() }
+
+    val size: Int get() = synchronized(this) { entries.size }
+
+    /** 命中未过期的条目；过期条目计入过期计数并返回 null。 */
+    fun get(url: String): Entry? = synchronized(this) {
+        val entry = entries[url] ?: return null
+        if (isExpired(entry)) {
+            expirations++
+            return null
         }
-        return containsKey(url)
+        entry
     }
 
-    fun totalBytes(): Long = values.sumOf { it.imageInfo.computeMinByteSize().toLong() }
+    /** 取可能已过期的条目，用于条件请求复用。 */
+    fun getStale(url: String): Entry? = synchronized(this) { entries[url] }
+
+    /** 304 之后刷新过期时间；条目已被淘汰时返回 false。 */
+    fun refresh(url: String): Boolean = synchronized(this) {
+        val entry = entries[url] ?: return false
+        if (ttlMs > 0) entry.expiresAtMillis = clock() + ttlMs
+        true
+    }
+
+    fun putImage(url: String, image: Image, etag: String? = null): Boolean {
+        val sizeBytes = image.imageInfo.computeMinByteSize().toLong()
+        if (sizeBytes > maxBytes) return false
+        synchronized(this) {
+            entries.remove(url)?.let { totalBytes -= it.sizeBytes }
+            entries[url] = Entry(
+                image = image,
+                etag = etag,
+                sizeBytes = sizeBytes,
+                expiresAtMillis = if (ttlMs > 0) clock() + ttlMs else Long.MAX_VALUE,
+            )
+            totalBytes += sizeBytes
+            while (entries.size > limit || totalBytes > maxBytes) {
+                val eldestKey = entries.keys.firstOrNull() ?: break
+                if (eldestKey == url && entries.size == 1) break
+                val removed = entries.remove(eldestKey) ?: break
+                totalBytes -= removed.sizeBytes
+                evictions++
+            }
+            return entries.containsKey(url)
+        }
+    }
+
+    fun remove(url: String): Entry? = synchronized(this) {
+        entries.remove(url)?.also { totalBytes -= it.sizeBytes }
+    }
+
+    fun clear() = synchronized(this) {
+        entries.clear()
+        totalBytes = 0
+    }
+
+    fun totalBytes(): Long = synchronized(this) { totalBytes }
+
+    fun evictionCount(): Long = synchronized(this) { evictions }
+
+    fun expirationCount(): Long = synchronized(this) { expirations }
+
+    private fun isExpired(entry: Entry): Boolean = ttlMs > 0 && entry.expiresAtMillis <= clock()
+}
+
+/** 一次图片获取的结果：解码后的图片、响应 ETag，以及是否复用了缓存中的旧图片。 */
+internal class LoadedImage(
+    val image: Image,
+    val etag: String?,
+    val reused: Boolean,
+)
+
+/** 下载结果：拿到新字节，或服务端返回 304。 */
+internal sealed interface DownloadResult {
+    data class Downloaded(val bytes: ByteArray, val etag: String?) : DownloadResult
+
+    data object NotModified : DownloadResult
 }
 
 /**
@@ -45,9 +136,9 @@ internal class MemoryImageCache(
  * 其余调用等待同一个结果，避免重复网络请求与重复解码。
  */
 internal object SharedImageLoader {
-    private val inFlight = ConcurrentHashMap<String, CompletableFuture<Image>>()
+    private val inFlight = ConcurrentHashMap<String, CompletableFuture<LoadedImage>>()
 
-    fun load(url: String, loader: () -> Image): Image {
+    fun load(url: String, loader: () -> LoadedImage): LoadedImage {
         while (true) {
             inFlight[url]?.let { pending ->
                 return try {
@@ -56,12 +147,12 @@ internal object SharedImageLoader {
                     throw error.cause ?: error
                 }
             }
-            val pending = CompletableFuture<Image>()
+            val pending = CompletableFuture<LoadedImage>()
             if (inFlight.putIfAbsent(url, pending) != null) continue
             try {
-                val image = loader()
-                pending.complete(image)
-                return image
+                val loaded = loader()
+                pending.complete(loaded)
+                return loaded
             } catch (error: Throwable) {
                 pending.completeExceptionally(error)
                 throw error
@@ -82,94 +173,183 @@ internal class LimitedNetworkImageCache(
     private val allowPrivateHosts: Boolean,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 10_000,
+    private val maxRetries: Int = 0,
+    private val retryBackoffMs: Long = 0,
 ) : NetworkImageCache {
     override val name: String = "OpenSnapshotLimitedNetworkImageCache"
     private var requestCount = 0
 
     @Synchronized
     override fun getImage(url: String, noCache: Boolean): Image {
-        if (!noCache) {
-            val cached = synchronized(memoryCache) { memoryCache[url] }
-            if (cached != null) {
+        val stale = if (!noCache) {
+            val fresh = memoryCache.get(url)
+            if (fresh != null) {
                 Metrics.imageCacheHits.inc()
-                return cached
+                return fresh.image
             }
             Metrics.imageCacheMisses.inc()
+            // 过期条目保留 ETag，用于条件请求；没有条目时返回 null。
+            memoryCache.getStale(url)
+        } else {
+            null
         }
+
         check(requestCount < maxImageNum) {
             "Exceeded maximum number [$maxImageNum] of image http requests"
         }
         requestCount++
-        val image = SharedImageLoader.load(url) { loadImage(url) }
-        if (!noCache) synchronized(memoryCache) { memoryCache.putImage(url, image) }
-        return image
+
+        val loaded = SharedImageLoader.load(url) { loadImage(url, stale) }
+        if (!noCache) {
+            if (loaded.reused) {
+                // 304：刷新过期时间；条目若已被淘汰则重新写回。
+                if (!memoryCache.refresh(url)) {
+                    memoryCache.putImage(url, loaded.image, loaded.etag)
+                }
+            } else {
+                memoryCache.putImage(url, loaded.image, loaded.etag)
+            }
+        }
+        return loaded.image
     }
 
-    private fun loadImage(url: String): Image {
-        val encoded = try {
-            Metrics.imageDownloads.inc()
-            download(url)
+    private fun loadImage(url: String, stale: MemoryImageCache.Entry?): LoadedImage {
+        val download = try {
+            downloadWithRetry(url, stale?.etag)
         } catch (error: Throwable) {
             Metrics.imageDownloadFailures.inc()
             throw error
         }
-        val image = Image.makeFromEncoded(encoded)
+        if (download is DownloadResult.NotModified) {
+            val entry = stale
+            if (entry != null) {
+                Metrics.imageRevalidated(REVALIDATION_NOT_MODIFIED)
+                return LoadedImage(entry.image, entry.etag, reused = true)
+            }
+            // 理论上不可达（服务端只在带 ETag 时返回 304），退化为重新下载。
+        }
+
+        val downloaded = download as DownloadResult.Downloaded
+        val image = Image.makeFromEncoded(downloaded.bytes)
         if (image.width > maxImageWidth || image.height > maxImageHeight) {
             image.close()
-            throw IllegalArgumentException(
+            throw ImageLoadException(
                 "Image dimensions ${image.width}x${image.height} exceed maximum ${maxImageWidth}x$maxImageHeight"
             )
         }
         if (image.width.toLong() * image.height.toLong() > maxImagePixels) {
             image.close()
-            throw IllegalArgumentException(
+            throw ImageLoadException(
                 "Image pixel count ${image.width.toLong() * image.height.toLong()} exceeds maximum $maxImagePixels"
             )
         }
-        return image
+        if (stale != null) {
+            Metrics.imageRevalidated(REVALIDATION_UPDATED)
+        }
+        return LoadedImage(image, downloaded.etag, reused = false)
     }
 
-    override fun clearAll() = synchronized(memoryCache) { memoryCache.clear() }
+    override fun clearAll() = memoryCache.clear()
     override fun clearImage(url: String) {
-        synchronized(memoryCache) { memoryCache.remove(url) }
+        memoryCache.remove(url)
     }
-    override fun count(): Int = synchronized(memoryCache) { memoryCache.size }
-    override fun size(): Int = synchronized(memoryCache) {
-        memoryCache.totalBytes().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-    }
+    override fun count(): Int = memoryCache.size
+    override fun size(): Int = memoryCache.totalBytes().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
-    private fun download(url: String): ByteArray {
-        val uri = URI(url)
-        require(uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) {
-            "Only http and https image URLs are allowed"
-        }
-        val host = requireNotNull(uri.host) { "Image URL must include a host" }
-        if (!allowPrivateHosts) {
-            require(!isPrivateHost(host)) {
-                "Private or local image hosts are not allowed"
-            }
-        }
-        val connection = uri.toURL().openConnection().apply {
-            connectTimeout = connectTimeoutMs
-            readTimeout = readTimeoutMs
-        }
-        return try {
-            if (connection is HttpURLConnection) {
-                connection.instanceFollowRedirects = false
-                require(connection.responseCode in 200..299) {
-                    "Image server returned HTTP ${connection.responseCode}"
+    /** 下载并在瞬时故障时按退避重试；4xx 等确定性失败直接抛出。 */
+    private fun downloadWithRetry(url: String, etag: String?): DownloadResult {
+        var attempt = 0
+        while (true) {
+            try {
+                Metrics.imageDownloads.inc()
+                return download(url, etag)
+            } catch (error: ImageLoadException) {
+                if (!error.transient || attempt >= maxRetries) throw error
+                attempt++
+                Metrics.imageRetries.inc()
+                if (retryBackoffMs > 0) {
+                    try {
+                        Thread.sleep(retryBackoffMs * attempt)
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw error
+                    }
                 }
             }
-            val contentLength = connection.contentLengthLong
-            require(contentLength < 0 || contentLength <= maxSingleImageSize.toLong()) {
-                "Image response size $contentLength exceeds maximum $maxSingleImageSize bytes"
+        }
+    }
+
+    private fun download(url: String, etag: String?): DownloadResult {
+        val uri = try {
+            URI(url)
+        } catch (error: Exception) {
+            throw ImageLoadException("Image URL is not a valid URI: $url", error)
+        }
+        if (!uri.scheme.equals("http", ignoreCase = true) && !uri.scheme.equals("https", ignoreCase = true)) {
+            throw ImageLoadException("Only http and https image URLs are allowed")
+        }
+        val host = uri.host?.takeIf(String::isNotBlank)
+            ?: throw ImageLoadException("Image URL must include a host: $url")
+        if (!allowPrivateHosts && isPrivateHost(host)) {
+            throw ImageLoadException("Private or local image hosts are not allowed: $host")
+        }
+
+        val connection = try {
+            uri.toURL().openConnection().apply {
+                connectTimeout = connectTimeoutMs
+                readTimeout = readTimeoutMs
             }
-            connection.getInputStream().use {
-                LimitedImageInputStream(it, maxSingleImageSize).readBytes()
+        } catch (error: Exception) {
+            throw ImageLoadException("Failed to open image URL $url: ${error.message}", error, transient = true)
+        }
+
+        return try {
+            try {
+                downloadOnce(connection, url, etag)
+            } catch (error: ImageLoadException) {
+                throw error
+            } catch (error: Exception) {
+                // 连接建立后仍可能超时或中断（例如读取响应状态），统一视为瞬时故障以便重试。
+                throw ImageLoadException("Failed to load image from $url: ${error.message}", error, transient = true)
             }
         } finally {
             (connection as? HttpURLConnection)?.disconnect()
         }
+    }
+
+    private fun downloadOnce(connection: java.net.URLConnection, url: String, etag: String?): DownloadResult {
+        var responseEtag: String? = null
+        if (connection is HttpURLConnection) {
+            connection.instanceFollowRedirects = false
+            if (etag != null) {
+                connection.setRequestProperty("If-None-Match", etag)
+            }
+            val status = connection.responseCode
+            if (status == HTTP_NOT_MODIFIED) {
+                return DownloadResult.NotModified
+            }
+            if (status !in 200..299) {
+                throw ImageLoadException(
+                    message = "Image server returned HTTP $status",
+                    transient = status >= 500 || status == 408 || status == 429,
+                )
+            }
+            responseEtag = connection.getHeaderField("ETag")
+        }
+        val contentLength = connection.contentLengthLong
+        if (contentLength >= 0 && contentLength > maxSingleImageSize.toLong()) {
+            throw ImageLoadException(
+                "Image response size $contentLength exceeds maximum $maxSingleImageSize bytes"
+            )
+        }
+        val bytes = try {
+            connection.getInputStream().use {
+                LimitedImageInputStream(it, maxSingleImageSize).readBytes()
+            }
+        } catch (error: Exception) {
+            throw ImageLoadException("Failed to read image from $url: ${error.message}", error, transient = true)
+        }
+        return DownloadResult.Downloaded(bytes, responseEtag)
     }
 
     private fun isPrivateHost(host: String): Boolean {
@@ -177,7 +357,12 @@ internal class LimitedNetworkImageCache(
         if (normalized == "localhost" || normalized.endsWith(".localhost") ||
             normalized == "metadata.google.internal" || normalized == "metadata" ||
             normalized == "instance-data") return true
-        return InetAddress.getAllByName(normalized).any(::isBlockedImageAddress)
+        return runCatching { InetAddress.getAllByName(normalized).any(::isBlockedImageAddress) }
+            .getOrElse { true }
+    }
+
+    private companion object {
+        const val HTTP_NOT_MODIFIED = 304
     }
 }
 
@@ -240,7 +425,11 @@ private var memoryImageCache: MemoryImageCache? = null
 fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) {
     val limits = snapshotConfig().image
     val allowPrivateHosts = allowPrivateHostsOverride ?: limits.allowPrivateHosts
-    val cache = MemoryImageCache(limits.memoryCacheNumLimit, limits.maxCacheBytes)
+    val cache = MemoryImageCache(
+        limit = limits.memoryCacheNumLimit,
+        maxBytes = limits.maxCacheBytes,
+        ttlMs = limits.cacheTtlMs,
+    )
     memoryImageCache = cache
     SnapshotElement.NETWORK_IMAGE_CACHE_BUILDER = {
         LimitedNetworkImageCache(
@@ -253,16 +442,24 @@ fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) 
             allowPrivateHosts = allowPrivateHosts,
             connectTimeoutMs = limits.connectTimeoutMs,
             readTimeoutMs = limits.readTimeoutMs,
+            maxRetries = limits.maxRetries,
+            retryBackoffMs = limits.retryBackoffMs,
         )
     }
 }
 
 fun clearImageCache() {
-    memoryImageCache?.let { synchronized(it) { it.clear() } }
+    memoryImageCache?.clear()
 }
 
 /** 网络图片缓存是否已经初始化，供就绪检查使用。 */
 internal fun isImageCacheConfigured(): Boolean = memoryImageCache != null
+
+/** 图片缓存因容量上限淘汰的条目数。 */
+internal fun imageCacheEvictions(): Long = memoryImageCache?.evictionCount() ?: 0L
+
+/** 图片缓存因 TTL 过期而重新加载的次数。 */
+internal fun imageCacheExpirations(): Long = memoryImageCache?.expirationCount() ?: 0L
 
 fun imageCacheInfo(): Pair<Int, Int> {
     val cache = memoryImageCache ?: return 0 to 0

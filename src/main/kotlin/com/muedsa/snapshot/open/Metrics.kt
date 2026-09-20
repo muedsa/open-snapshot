@@ -233,6 +233,17 @@ internal object Metrics {
     val imageCacheMisses = Counter()
     val imageDownloads = Counter()
     val imageDownloadFailures = Counter()
+    val imageRetries = Counter()
+
+    val imageRevalidations = LabeledCounter(
+        name = "snapshot_image_revalidations_total",
+        help = "Conditional image requests by result: not_modified or updated.",
+        labelNames = listOf("result"),
+    )
+
+    fun imageRevalidated(result: String) {
+        imageRevalidations.inc(listOf(result))
+    }
 
     val rateLimited = LabeledCounter(
         name = "snapshot_rate_limited_total",
@@ -376,9 +387,34 @@ internal object Metrics {
                 type = "counter",
             )
         )
+        append(
+            renderGauge(
+                "snapshot_image_download_retries_total",
+                "Image downloads retried after a transient failure.",
+                imageRetries.value(),
+                type = "counter",
+            )
+        )
+        append(imageRevalidations.render())
         val (cacheEntries, cacheBytes) = imageCacheInfo()
         append(renderGauge("snapshot_image_cache_entries", "Images held in the memory cache.", cacheEntries.toLong()))
         append(renderGauge("snapshot_image_cache_bytes", "Estimated bytes held in the memory cache.", cacheBytes.toLong()))
+        append(
+            renderGauge(
+                "snapshot_image_cache_evictions_total",
+                "Images evicted from the memory cache by the size limits.",
+                imageCacheEvictions(),
+                type = "counter",
+            )
+        )
+        append(
+            renderGauge(
+                "snapshot_image_cache_expirations_total",
+                "Cache lookups that found an expired image entry.",
+                imageCacheExpirations(),
+                type = "counter",
+            )
+        )
     }
 
     private fun renderGauge(name: String, help: String, value: Long, type: String = "gauge"): String =

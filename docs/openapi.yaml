@@ -233,8 +233,35 @@ paths:
     get:
       tags: [admin]
       summary: 字体预览图
+      description: |
+        渲染字体样例图。可用 `family` 只渲染指定字体，并用 `offset`/`limit` 分页，
+        避免字体数量多时图片过大。相同查询会命中渲染结果缓存。
       security:
         - AdminBearer: []
+      parameters:
+        - name: family
+          in: query
+          required: false
+          description: 字体族名称，可用英文逗号分隔多个；名称大小写不敏感。省略表示全部字体。
+          schema:
+            type: string
+          example: "DejaVu Serif,Inter"
+        - name: offset
+          in: query
+          required: false
+          description: 分页起始下标，默认 0；超出范围返回空白预览图。
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: 单页字体数量，默认 0 表示不限制。
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         "200":
           description: 字体预览 PNG。
@@ -243,6 +270,21 @@ paths:
               schema:
                 type: string
                 format: binary
+        "400":
+          description: |
+            查询参数不合法：`FONT_NOT_FOUND`（`family` 中有不存在的字体族）、
+            `INVALID_QUERY`（`offset`/`limit` 不是非负整数）。
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                code: FONT_NOT_FOUND
+                message: "Unknown font families: NoSuchFamilyXyz"
+                requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -397,6 +439,8 @@ components:
             - IMAGE_LOAD_ERROR
             - REQUEST_TOO_LARGE
             - RENDER_TIMEOUT
+            - FONT_NOT_FOUND
+            - INVALID_QUERY
             - RATE_LIMITED
             - QUEUE_FULL
             - QUEUE_TIMEOUT

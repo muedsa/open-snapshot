@@ -25,6 +25,10 @@ internal data class ImageLimits(
     val allowPrivateHosts: Boolean,
     val connectTimeoutMs: Int,
     val readTimeoutMs: Int,
+    /** 图片缓存 TTL；0 表示永不过期。 */
+    val cacheTtlMs: Long,
+    val maxRetries: Int,
+    val retryBackoffMs: Long,
 )
 
 internal data class RateLimitSettings(
@@ -160,6 +164,17 @@ internal object SnapshotConfigLoader {
             return parsed
         }
 
+        /** 允许 0 的长整数，例如 `cache-ttl-ms: 0` 表示永不过期。 */
+        fun nonNegativeLong(path: String, default: Long): Long {
+            val value = raw(path) ?: return default
+            val parsed = value.toLongOrNull()
+            if (parsed == null || parsed < 0) {
+                problems += "$path must be a non-negative integer, but was '$value'"
+                return default
+            }
+            return parsed
+        }
+
         fun boolean(path: String, default: Boolean): Boolean {
             val value = raw(path) ?: return default
             val parsed = value.toBooleanStrictOrNull()
@@ -214,6 +229,9 @@ internal object SnapshotConfigLoader {
                 allowPrivateHosts = boolean("snapshot.image.allow-private-hosts", false),
                 connectTimeoutMs = positiveInt("snapshot.image.connect-timeout-ms", 10_000),
                 readTimeoutMs = positiveInt("snapshot.image.read-timeout-ms", 10_000),
+                cacheTtlMs = nonNegativeLong("snapshot.image.cache-ttl-ms", 600_000L),
+                maxRetries = nonNegativeInt("snapshot.image.max-retries", 1),
+                retryBackoffMs = nonNegativeLong("snapshot.image.retry-backoff-ms", 200L),
             ),
             rateLimit = RateLimitSettings(
                 anonymousRequests = positiveInt("snapshot.rate-limit.requests", 6),

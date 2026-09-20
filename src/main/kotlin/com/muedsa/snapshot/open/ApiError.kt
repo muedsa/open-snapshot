@@ -10,6 +10,8 @@ internal object ErrorCodes {
     const val IMAGE_LOAD_ERROR = "IMAGE_LOAD_ERROR"
     const val REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
     const val RENDER_TIMEOUT = "RENDER_TIMEOUT"
+    const val FONT_NOT_FOUND = "FONT_NOT_FOUND"
+    const val INVALID_QUERY = "INVALID_QUERY"
     const val RATE_LIMITED = "RATE_LIMITED"
     const val QUEUE_FULL = "QUEUE_FULL"
     const val QUEUE_TIMEOUT = "QUEUE_TIMEOUT"
@@ -26,6 +28,8 @@ internal object ErrorCodes {
         IMAGE_LOAD_ERROR,
         REQUEST_TOO_LARGE,
         RENDER_TIMEOUT,
+        FONT_NOT_FOUND,
+        INVALID_QUERY,
         RATE_LIMITED,
         QUEUE_FULL,
         QUEUE_TIMEOUT,
