@@ -30,6 +30,21 @@ fi
 if [ -n "${SNAPSHOT_RATE_LIMIT_WINDOW_MS:-}" ]; then
     set -- "$@" "-P:snapshot.rate-limit.window-ms=${SNAPSHOT_RATE_LIMIT_WINDOW_MS}"
 fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.credential-requests=${SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS}"
+fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_CREDENTIAL_WINDOW_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.credential-window-ms=${SNAPSHOT_RATE_LIMIT_CREDENTIAL_WINDOW_MS}"
+fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.admin-requests=${SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS}"
+fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_ADMIN_WINDOW_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.admin-window-ms=${SNAPSHOT_RATE_LIMIT_ADMIN_WINDOW_MS}"
+fi
+if [ -n "${SNAPSHOT_METRICS_ACCESS:-}" ]; then
+    set -- "$@" "-P:snapshot.metrics-access=${SNAPSHOT_METRICS_ACCESS}"
+fi
 if [ -n "${SNAPSHOT_MAX_CANVAS_WIDTH:-}" ]; then
     set -- "$@" "-P:snapshot.max-canvas-width=${SNAPSHOT_MAX_CANVAS_WIDTH}"
 fi
@@ -75,7 +90,7 @@ fi
 if [ -n "${SNAPSHOT_IMAGE_READ_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.image.read-timeout-ms=${SNAPSHOT_IMAGE_READ_TIMEOUT_MS}"
 fi
-# SNAPSHOT_API_KEY 与 SNAPSHOT_ADMIN_TOKEN 一样，由应用直接读取环境变量，
+# SNAPSHOT_API_KEY、SNAPSHOT_API_KEYS 与 SNAPSHOT_ADMIN_TOKEN 一样，由应用直接读取环境变量，
 # 不转换为命令行参数，避免密钥出现在进程列表中。
 
 exec java -jar /app/open-snapshot.jar "$@"

@@ -17,6 +17,9 @@ fun Application.configureHttp() {
         allowHeader(API_KEY_HEADER)
         exposeHeader("X-Request-Id")
         exposeHeader(HttpHeaders.RetryAfter)
+        exposeHeader("X-RateLimit-Limit")
+        exposeHeader("X-RateLimit-Remaining")
+        exposeHeader("X-RateLimit-Reset")
         allowNonSimpleContentTypes = true
         cors.allowedHosts.forEach(::allowHost)
     }

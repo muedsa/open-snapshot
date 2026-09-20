@@ -28,9 +28,30 @@ internal data class ImageLimits(
 )
 
 internal data class RateLimitSettings(
-    val requests: Int,
-    val windowMs: Long,
+    val anonymousRequests: Int,
+    val anonymousWindowMs: Long,
+    val credentialRequests: Int,
+    val credentialWindowMs: Long,
+    val adminRequests: Int,
+    val adminWindowMs: Long,
 )
+
+/** `/metrics` 的访问模式；探针 `/health`、`/ready` 始终开放。 */
+internal enum class MetricsAccess {
+    OPEN,
+    CREDENTIAL,
+    ADMIN,
+    ;
+
+    companion object {
+        fun parse(value: String?): MetricsAccess? = when (value?.lowercase()) {
+            null, "open" -> OPEN
+            "credential" -> CREDENTIAL
+            "admin" -> ADMIN
+            else -> null
+        }
+    }
+}
 
 internal data class CorsSettings(
     val allowedHosts: List<String>,
@@ -63,15 +84,27 @@ internal class SnapshotConfig(
     val rateLimit: RateLimitSettings,
     val cors: CorsSettings,
     val admin: AdminSettings,
+    /** 匿名调用方是否开放；由是否配置客户端凭据决定。 */
     val apiKey: String?,
+    val credentials: List<ApiCredential>,
+    val metricsAccess: MetricsAccess,
     val accessLog: AccessLogSettings,
     val metricsEnabled: Boolean,
     val fontFamilyNames: List<String>,
-)
+) {
+    /** 是否配置了至少一个客户端凭据。 */
+    val requiresCredential: Boolean get() = credentials.isNotEmpty()
+}
 
 internal object SnapshotConfigLoader {
     /** 开放接口 API Key 的最小长度，避免使用过短的弱密钥。 */
     const val MIN_API_KEY_LENGTH: Int = 16
+
+    /** API Key 数量上限，同时约束指标标签基数。 */
+    const val MAX_CREDENTIALS: Int = 32
+
+    /** 凭据名称会出现在日志、指标与限流桶键里，因此限制字符集。 */
+    val CREDENTIAL_NAME_PATTERN = Regex("[A-Za-z0-9._-]{1,32}")
 
     private val DEFAULT_ACCESS_LOG_SKIP_PATHS = setOf("/health", "/ready", "/metrics")
 
@@ -113,13 +146,25 @@ internal object SnapshotConfigLoader {
         val adminEnabled = boolean("snapshot.admin-endpoints-enabled", false)
         val adminToken = env("SNAPSHOT_ADMIN_TOKEN")?.takeIf(String::isNotBlank)
             ?: raw("snapshot.admin-token")
-        if (adminEnabled && adminToken == null) {
-            problems += "snapshot.admin-token (or SNAPSHOT_ADMIN_TOKEN) is required when snapshot.admin-endpoints-enabled is true"
-        }
 
         val apiKey = env("SNAPSHOT_API_KEY")?.takeIf(String::isNotBlank) ?: raw("snapshot.api-key")
         if (apiKey != null && apiKey.length < MIN_API_KEY_LENGTH) {
             problems += "snapshot.api-key (or SNAPSHOT_API_KEY) must be at least $MIN_API_KEY_LENGTH characters long"
+        }
+
+        val credentials = parseCredentials(config, env, apiKey, problems)
+
+        // 管理接口可用「管理令牌」或「admin: true 的 API Key」任一方式访问。
+        if (adminEnabled && adminToken == null && credentials.none { it.admin }) {
+            problems += "snapshot.admin-token (or SNAPSHOT_ADMIN_TOKEN) or an API key with admin: true " +
+                "is required when snapshot.admin-endpoints-enabled is true"
+        }
+
+        val metricsAccessValue = env("SNAPSHOT_METRICS_ACCESS")?.takeIf(String::isNotBlank)
+            ?: raw("snapshot.metrics-access")
+        val metricsAccess = MetricsAccess.parse(metricsAccessValue)
+        if (metricsAccess == null) {
+            problems += "snapshot.metrics-access must be one of 'open', 'credential', 'admin', but was '$metricsAccessValue'"
         }
 
         val config = SnapshotConfig(
@@ -144,8 +189,12 @@ internal object SnapshotConfigLoader {
                 readTimeoutMs = positiveInt("snapshot.image.read-timeout-ms", 10_000),
             ),
             rateLimit = RateLimitSettings(
-                requests = positiveInt("snapshot.rate-limit.requests", 6),
-                windowMs = positiveLong("snapshot.rate-limit.window-ms", 60_000L),
+                anonymousRequests = positiveInt("snapshot.rate-limit.requests", 6),
+                anonymousWindowMs = positiveLong("snapshot.rate-limit.window-ms", 60_000L),
+                credentialRequests = positiveInt("snapshot.rate-limit.credential-requests", 60),
+                credentialWindowMs = positiveLong("snapshot.rate-limit.credential-window-ms", 60_000L),
+                adminRequests = positiveInt("snapshot.rate-limit.admin-requests", 6),
+                adminWindowMs = positiveLong("snapshot.rate-limit.admin-window-ms", 60_000L),
             ),
             cors = CorsSettings(
                 allowedHosts = config.tryGetStringList("snapshot.cors.allowed-hosts").orEmpty(),
@@ -153,6 +202,8 @@ internal object SnapshotConfigLoader {
             ),
             admin = AdminSettings(enabled = adminEnabled, token = adminToken),
             apiKey = apiKey,
+            credentials = credentials,
+            metricsAccess = metricsAccess ?: MetricsAccess.OPEN,
             accessLog = AccessLogSettings(
                 enabled = boolean("snapshot.access-log-enabled", true),
                 skipPaths = config.tryGetStringList("snapshot.access-log-skip-paths")?.toSet()
@@ -171,6 +222,79 @@ internal object SnapshotConfigLoader {
             )
         }
         return config
+    }
+
+    /**
+     * 解析凭据：单个 `snapshot.api-key`、YAML 列表 `snapshot.api-keys`、环境变量
+     * `SNAPSHOT_API_KEYS`（`名称:密钥` 逗号分隔）。
+     */
+    private fun parseCredentials(
+        config: ApplicationConfig,
+        env: (String) -> String?,
+        singleApiKey: String?,
+        problems: MutableList<String>,
+    ): List<ApiCredential> {
+        val credentials = mutableListOf<ApiCredential>()
+
+        singleApiKey?.takeIf { it.length >= MIN_API_KEY_LENGTH }?.let {
+            credentials += ApiCredential(name = "default", key = it)
+        }
+
+        env("SNAPSHOT_API_KEYS")?.takeIf(String::isNotBlank)?.let { rawKeys ->
+            rawKeys.split(',').map(String::trim).filter(String::isNotEmpty).forEach { entry ->
+                // 格式：名称:密钥[:admin]
+                val parts = entry.split(':', limit = 3).map(String::trim)
+                val name = parts.getOrNull(0).orEmpty()
+                val key = parts.getOrNull(1).orEmpty()
+                val flag = parts.getOrNull(2)
+                when {
+                    name.isEmpty() || key.isEmpty() ->
+                        problems += "SNAPSHOT_API_KEYS entries must be 'name:key' or 'name:key:admin' pairs, but was '$entry'"
+
+                    flag != null && !flag.equals("admin", ignoreCase = true) ->
+                        problems += "SNAPSHOT_API_KEYS optional flag must be 'admin', but was '$flag'"
+
+                    else -> credentials += ApiCredential(
+                        name = name,
+                        key = key,
+                        admin = flag != null,
+                    )
+                }
+            }
+        }
+
+        if (config.propertyOrNull("snapshot.api-keys") != null) {
+            config.configList("snapshot.api-keys").forEachIndexed { index, entry ->
+                val name = entry.propertyOrNull("name")?.getString()?.trim().orEmpty()
+                val key = entry.propertyOrNull("key")?.getString()?.trim().orEmpty()
+                val admin = entry.propertyOrNull("admin")?.getString()?.trim()?.toBooleanStrictOrNull() ?: false
+                if (name.isEmpty() || key.isEmpty()) {
+                    problems += "snapshot.api-keys[$index] requires both 'name' and 'key'"
+                } else {
+                    credentials += ApiCredential(name = name, key = key, admin = admin)
+                }
+            }
+        }
+
+        credentials.forEach { credential ->
+            if (credential.key.length < MIN_API_KEY_LENGTH) {
+                problems += "API key '${credential.name}' must be at least $MIN_API_KEY_LENGTH characters long"
+            }
+            if (!CREDENTIAL_NAME_PATTERN.matches(credential.name)) {
+                problems += "API key name '${credential.name}' must match ${CREDENTIAL_NAME_PATTERN.pattern}"
+            }
+        }
+
+        val duplicates = credentials.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+        if (duplicates.isNotEmpty()) {
+            problems += "API key names must be unique, duplicated: ${duplicates.sorted().joinToString(", ")}"
+        }
+
+        if (credentials.size > MAX_CREDENTIALS) {
+            problems += "at most $MAX_CREDENTIALS API keys are supported, but ${credentials.size} were configured"
+        }
+
+        return credentials
     }
 }
 

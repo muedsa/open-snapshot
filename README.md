@@ -111,12 +111,30 @@ curl -X POST http://localhost:8080/snapshot `
 
 ### 可选 API Key 鉴权
 
-默认情况下 `/snapshot` 开放调用，仅受按来源 IP 的限流保护。需要限制调用方时，配置一个至少
-16 位的 API Key 即可启用鉴权：
+默认情况下 `/snapshot` 开放调用，仅受限流保护。需要限制调用方时，配置任意一种凭据来源即可启用鉴权：
 
 ```dotenv
+# 单个 Key
 SNAPSHOT_API_KEY=replace-with-a-long-random-key
+# 多个 Key（名称:密钥，逗号分隔）；名称会出现在日志、指标与限流桶键中
+SNAPSHOT_API_KEYS=web-frontend:key-0123456789abcdef,partner-a:key-fedcba9876543210
 ```
+
+也可以在 YAML 中配置，并给需要访问管理接口的 Key 加 `admin: true`：
+
+```yaml
+snapshot:
+  api-keys:
+    - name: web-frontend
+      key: "key-0123456789abcdef"
+    - name: ops
+      key: "key-fedcba9876543210"
+      admin: true
+```
+
+约束：每个 Key 至少 16 位；名称需匹配 `[A-Za-z0-9._-]{1,32}` 且不可重复；最多 32 个 Key。
+
+**轮换方式**：把新 Key 与旧 Key 同时列在配置里，等调用方切换完成后删除旧 Key，全程无需停机。
 
 启用后 `/snapshot` 必须携带以下任一种凭据，否则返回 `401 UNAUTHORIZED`：
 
@@ -136,16 +154,37 @@ curl -X POST http://localhost:8080/snapshot `
   --output result.png
 ```
 
-`/health`、`/ready`、`/metrics` 始终不需要凭据，便于探针与监控直接访问。密钥比较使用定长比较；
-建议通过 `SNAPSHOT_API_KEY` 注入而不是写入配置文件或命令行参数。
+凭据按 SHA-256 摘要查找（不逐字符比较密钥），管理令牌使用定长比较。建议通过环境变量注入，而不是写入配置文件或命令行参数。
 
-管理接口默认不注册。启用时必须同时设置强随机令牌，并通过
-`Authorization: Bearer <token>` 访问：
+管理接口接受带 `admin: true` 的 API Key 或管理令牌；凭据有效但非管理员返回 `403 FORBIDDEN`，未认证返回 `401 UNAUTHORIZED`：
 
 ```dotenv
 SNAPSHOT_ADMIN_ENDPOINTS_ENABLED=true
 SNAPSHOT_ADMIN_TOKEN=replace-with-a-long-random-token
 ```
+
+### 分层限流
+
+| 调用方 | 计桶方式 | 配置项 | 默认值 |
+|---|---|---|---|
+| 匿名（未携带凭据） | 按来源 IP | `rate-limit.requests` / `window-ms` | 6 次 / 60 秒 |
+| 已认证（有效 API Key） | 按凭据名称 | `rate-limit.credential-requests` / `credential-window-ms` | 60 次 / 60 秒 |
+| 管理接口（字体预览图等） | 按管理凭据或来源 IP | `rate-limit.admin-requests` / `admin-window-ms` | 6 次 / 60 秒 |
+
+三层互不影响：已认证调用方不再占用匿名 IP 桶，匿名流量也不会吃掉凭据配额。
+
+- 未超限的响应带 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`；
+- 超限返回 `429` 并带 `Retry-After`，同时计入 `snapshot_rate_limited_total{scope="anonymous|credential|admin"}`。
+
+### `/metrics` 访问控制
+
+```dotenv
+SNAPSHOT_METRICS_ACCESS=open        # 默认：任何调用方都可读取
+SNAPSHOT_METRICS_ACCESS=credential  # 需要有效 API Key
+SNAPSHOT_METRICS_ACCESS=admin       # 需要管理凭据
+```
+
+`/health` 与 `/ready` 探针始终开放，不受该配置影响。
 
 ## 运行配置
 
@@ -162,7 +201,7 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
-  # 留空表示开放调用；填写后 /snapshot 需要 API Key。
+  # 留空表示开放调用；填写后 /snapshot 需要 API Key，多 Key 见 api-keys 列表。
   api-key: ""
   access-log-enabled: true
   access-log-skip-paths:
@@ -170,9 +209,18 @@ snapshot:
     - /ready
     - /metrics
   metrics-enabled: true
+  # /metrics 访问控制：open / credential / admin
+  metrics-access: open
   rate-limit:
+    # 匿名按来源 IP
     requests: 6
     window-ms: 60000
+    # 已认证按凭据
+    credential-requests: 60
+    credential-window-ms: 60000
+    # 管理接口
+    admin-requests: 6
+    admin-window-ms: 60000
   max-canvas-width: 4096
   max-canvas-height: 4096
   max-canvas-pixels: 16777216
@@ -265,6 +313,7 @@ event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=2
 | `snapshot_http_request_duration_seconds{path}` | summary | 各路由请求耗时 |
 | `snapshot_image_cache_hits_total` / `snapshot_image_cache_misses_total` | counter | 网络图片缓存命中与未命中 |
 | `snapshot_image_downloads_total` / `snapshot_image_download_failures_total` | counter | 图片下载次数与失败次数 |
+| `snapshot_rate_limited_total{scope}` | counter | 被限流拒绝的请求数，按层级（`anonymous`/`credential`/`admin`）区分 |
 | `snapshot_image_cache_entries` / `snapshot_image_cache_bytes` | gauge | 缓存图片数量与估算占用 |
 
 路径标签收敛在固定集合内（未知路径记为 `/other`），不会因外部输入产生高基数。
@@ -355,9 +404,13 @@ SNAPSHOT_METRICS_ENABLED=true
 SNAPSHOT_SHUTDOWN_GRACE_MS=10000
 SNAPSHOT_SHUTDOWN_TIMEOUT_MS=15000
 SNAPSHOT_API_KEY=replace-with-a-long-random-key
+SNAPSHOT_API_KEYS=web-frontend:key-0123456789abcdef,partner-a:key-fedcba9876543210
+SNAPSHOT_METRICS_ACCESS=open
+SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS=120
+SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS=4
 ```
 
-配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN` 与 `SNAPSHOT_API_KEY` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
+配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名、字体族与 `api-keys` 列表属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN`、`SNAPSHOT_API_KEY` 与 `SNAPSHOT_API_KEYS` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
 
 容器拓扑为 `Internet -> Nginx -> open-snapshot:8080`，应用端口不会直接暴露到宿主机。Nginx 默认包含：
 

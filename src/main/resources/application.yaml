@@ -23,17 +23,34 @@ snapshot:
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
   # 留空表示开放调用；填写后 /snapshot 需要 X-API-Key 或 Authorization: Bearer。
-  # 建议通过 SNAPSHOT_API_KEY 环境变量注入，避免出现在进程命令行里。
+  # 需要多个 Key 时改用下面的 api-keys 列表或 SNAPSHOT_API_KEYS 环境变量。
+  # 建议通过环境变量注入，避免出现在进程命令行里。
   api-key: ""
+  # 多 Key 示例（name 用于日志、指标与限流分桶；admin=true 可访问管理接口）：
+  # api-keys:
+  #   - name: web-frontend
+  #     key: ""
+  #   - name: ops
+  #     key: ""
+  #     admin: true
   access-log-enabled: true
   access-log-skip-paths:
     - /health
     - /ready
     - /metrics
   metrics-enabled: true
+  # /metrics 访问控制：open（默认）、credential（需要 API Key）、admin（需要管理凭据）。
+  metrics-access: open
   rate-limit:
+    # 匿名调用方：按来源 IP 计桶。
     requests: 6
     window-ms: 60000
+    # 已认证调用方：按凭据计桶。
+    credential-requests: 60
+    credential-window-ms: 60000
+    # 管理接口（字体预览图等）：按管理凭据或来源 IP 计桶。
+    admin-requests: 6
+    admin-window-ms: 60000
   max-canvas-width: 4096
   max-canvas-height: 4096
   max-canvas-pixels: 16777216
