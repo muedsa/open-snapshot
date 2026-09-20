@@ -163,6 +163,46 @@ class SnapshotConfigTest {
     }
 
     @Test
+    fun `error image settings are configurable`() {
+        val defaults = SnapshotConfigLoader.load(MapApplicationConfig(), env = { null })
+        assertEquals(true, defaults.errorImage.enabled)
+        assertEquals(8, defaults.errorImage.maxLines)
+        assertEquals(80, defaults.errorImage.maxColumns)
+        assertEquals(2, defaults.errorImage.contextLines)
+
+        val configured = SnapshotConfigLoader.load(
+            MapApplicationConfig(
+                "snapshot.error-image.enabled" to "false",
+                "snapshot.error-image.max-lines" to "3",
+                "snapshot.error-image.max-columns" to "40",
+                "snapshot.error-image.context-lines" to "0",
+            ),
+            env = { null },
+        )
+        assertEquals(false, configured.errorImage.enabled)
+        assertEquals(3, configured.errorImage.maxLines)
+        assertEquals(40, configured.errorImage.maxColumns)
+        assertEquals(0, configured.errorImage.contextLines)
+    }
+
+    @Test
+    fun `invalid error image settings are reported`() {
+        val error = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(
+                    "snapshot.error-image.max-lines" to "0",
+                    "snapshot.error-image.context-lines" to "-1",
+                ),
+                env = { null },
+            )
+        }
+
+        val message = error.message.orEmpty()
+        assertTrue(message.contains("snapshot.error-image.max-lines"), message)
+        assertTrue(message.contains("snapshot.error-image.context-lines"), message)
+    }
+
+    @Test
     fun `blank api key keeps the render endpoint open`() {
         val config = SnapshotConfigLoader.load(
             MapApplicationConfig("snapshot.api-key" to "   "),

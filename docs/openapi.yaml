@@ -41,6 +41,18 @@ paths:
         - ApiKeyHeader: []
         - BearerApiKey: []
         - {}
+      parameters:
+        - name: errorImage
+          in: query
+          required: false
+          description: |
+            传 `png` 时，若 DSL 解析失败则返回解析错误高亮图（`image/png`，状态码仍为 400），
+            并附带 `X-Snapshot-Error-*` 响应头；解析成功时该参数被忽略。
+            其他取值、或错误图渲染失败/超时时回退为 JSON 错误。
+          schema:
+            type: string
+            enum: [png]
+          example: png
       requestBody:
         required: true
         description: snapshot DSL 文本，根标签为 `<Snapshot>`。
@@ -369,9 +381,25 @@ components:
         请求不合法，`code` 取值：
         `EMPTY_REQUEST`（空请求体）、`PARSE_ERROR`（DSL 语法错误，message 含位置与附近源码）、
         `RENDER_ERROR`（超出画布限制或布局失败）、`IMAGE_LOAD_ERROR`（图片地址非法或加载失败）。
+
+        带 `?errorImage=png` 且 `code` 为 `PARSE_ERROR` 时，响应体为解析错误高亮图（`image/png`），
+        并返回 `X-Snapshot-Error-Code`、`X-Snapshot-Error-Position`、`X-Snapshot-Error-Location` 响应头；
+        错误图渲染失败时回退为这里的 JSON。
       headers:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
+        X-Snapshot-Error-Code:
+          schema:
+            type: string
+            example: PARSE_ERROR
+        X-Snapshot-Error-Position:
+          schema:
+            type: string
+            example: "21"
+        X-Snapshot-Error-Location:
+          schema:
+            type: string
+            example: line 1, column 22
       content:
         application/json:
           schema:
@@ -380,6 +408,11 @@ components:
             code: PARSE_ERROR
             message: "Unexpected token at position 12 near: <Container w"
             requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
+        image/png:
+          schema:
+            type: string
+            format: binary
+          description: 仅在请求带 `?errorImage=png` 且为解析错误时返回。
     Unauthorized:
       description: 缺少或提供了错误的凭据，`code` 为 `UNAUTHORIZED`。
       headers:

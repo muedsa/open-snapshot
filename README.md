@@ -89,6 +89,26 @@ curl -X POST http://localhost:8080/snapshot `
 | `UNAUTHORIZED` | 401 | 管理接口缺少或提供了错误的 Bearer 令牌 |
 | `INTERNAL_ERROR` | 500 | 未预期的内部错误，`message` 不包含内部细节 |
 
+#### 解析错误高亮图
+
+请求带 `?errorImage=png` 时，解析失败会返回一张错误卡片（PNG）而不是 JSON，便于在调试工具里直接查看：
+
+```bash
+curl -X POST "http://localhost:8080/snapshot?errorImage=png" `
+  -H "Content-Type: text/plain" `
+  --data '<Snapshot><Container width="1"height="1"/></Snapshot>' `
+  --output error.png
+```
+
+卡片包含：错误标题、带行号的源码摘录（错误行浅红底、`^` 指向出错列）、错误消息、位置与 `requestId`。
+
+- 只在解析失败时生效；解析成功时该参数被忽略，正常出图；
+- HTTP 状态仍为 `400`，并额外返回 `X-Snapshot-Error-Code`、`X-Snapshot-Error-Position`、`X-Snapshot-Error-Location`；
+- **不带该参数时行为完全不变**（仍是 JSON 错误）；`errorImage` 只支持 `png`，其他值回退 JSON；
+- 错误卡片渲染失败或超时（含渲染队列已满）时**回退 JSON**，绝不掩盖原始解析错误；
+- 摘录范围由 `error-image.max-lines`、`max-columns`、`context-lines` 控制，`error-image.enabled=false` 可关闭；
+- 非解析类错误（画布超限、图片加载失败等）仍返回 JSON。
+
 #### 渲染执行模型
 
 - 渲染在专用线程池上执行，线程名为 `snapshot-render-*`，不会占用 Netty 连接处理线程；
@@ -217,6 +237,12 @@ snapshot:
     max-entries: 256
     max-bytes: 67108864
     ttl-ms: 60000
+  # 解析错误高亮图（?errorImage=png）
+  error-image:
+    enabled: true
+    max-lines: 8
+    max-columns: 80
+    context-lines: 2
   # 留空表示开放调用；填写后 /snapshot 需要 API Key，多 Key 见 api-keys 列表。
   api-key: ""
   access-log-enabled: true

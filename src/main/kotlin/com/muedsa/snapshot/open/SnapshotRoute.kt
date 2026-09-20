@@ -1,5 +1,6 @@
 package com.muedsa.snapshot.open
 
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -20,7 +21,18 @@ internal class SnapshotRouteContext(
     val maxRenderTimeoutMs: Long,
     val renderLimits: RenderLimits,
     val renderExecutor: RenderExecutor,
+    val errorImage: ErrorImageSettings,
 )
+
+/** `?errorImage=png` 时返回的响应头，便于调用方程序化读取错误信息。 */
+internal const val ERROR_IMAGE_CODE_HEADER = "X-Snapshot-Error-Code"
+internal const val ERROR_IMAGE_POSITION_HEADER = "X-Snapshot-Error-Position"
+internal const val ERROR_IMAGE_LOCATION_HEADER = "X-Snapshot-Error-Location"
+
+internal const val ERROR_IMAGE_FORMAT_PNG = "png"
+internal const val ERROR_IMAGE_SERVED = "served"
+internal const val ERROR_IMAGE_FALLBACK = "fallback"
+internal const val ERROR_IMAGE_UNSUPPORTED = "unsupported"
 
 /**
  * `/snapshot` 的处理逻辑：鉴权 → 排水检查 → 限流已由路由层完成 → 流式读取请求体 → 渲染 → 输出图片。
@@ -129,7 +141,7 @@ internal suspend fun ApplicationCall.handleSnapshotRequest(context: SnapshotRout
     } catch (error: CancellationException) {
         throw error
     } catch (error: Exception) {
-        respondRenderFailure(error, requestId, startedAt, source)
+        respondRenderFailure(error, requestId, startedAt, source, context)
     }
 }
 
@@ -138,6 +150,7 @@ private suspend fun ApplicationCall.respondRenderFailure(
     requestId: String,
     startedAt: Long,
     source: String?,
+    context: SnapshotRouteContext,
 ) {
     val sourceMessage = when {
         // 解析失败时补充出错位置与附近源码，便于定位 DSL 问题。
@@ -164,6 +177,22 @@ private suspend fun ApplicationCall.respondRenderFailure(
         "Snapshot request failed requestId=$requestId elapsedNanos=${System.nanoTime() - startedAt}",
         error,
     )
+
+    if (requestedErrorImage()) {
+        val parseError = error.findParseException()
+        if (code == ErrorCodes.PARSE_ERROR && parseError != null && context.errorImage.enabled) {
+            val rendered = renderErrorImage(parseError, source.orEmpty(), requestId, code, context)
+            if (rendered != null) {
+                Metrics.errorImageServed(ERROR_IMAGE_SERVED)
+                respondBytes(rendered, ContentType.Image.PNG, HttpStatusCode.BadRequest)
+                return
+            }
+            Metrics.errorImageServed(ERROR_IMAGE_FALLBACK)
+        } else {
+            Metrics.errorImageServed(ERROR_IMAGE_UNSUPPORTED)
+        }
+    }
+
     respondApiError(
         this,
         ApiError(
@@ -174,6 +203,53 @@ private suspend fun ApplicationCall.respondRenderFailure(
         ),
     )
 }
+
+/** 请求是否显式要求错误图（`?errorImage=png`）。 */
+private fun ApplicationCall.requestedErrorImage(): Boolean =
+    request.queryParameters["errorImage"]?.trim()?.equals(ERROR_IMAGE_FORMAT_PNG, ignoreCase = true) == true
+
+/**
+ * 渲染解析错误卡片。失败时返回 null（调用方回退 JSON），
+ * 并且**不会**让错误图渲染的失败掩盖原始解析错误。
+ */
+private suspend fun ApplicationCall.renderErrorImage(
+    parseError: com.muedsa.snapshot.parser.ParseException,
+    source: String,
+    requestId: String,
+    code: String,
+    context: SnapshotRouteContext,
+): ByteArray? {
+    val settings = context.errorImage
+    val excerpt = buildErrorExcerpt(
+        source = source,
+        pos = parseError.pos,
+        maxLines = settings.maxLines,
+        maxColumns = settings.maxColumns,
+        contextLines = settings.contextLines,
+    )
+    val message = parseError.message ?: "Invalid snapshot document"
+    val bytes = try {
+        withTimeout(context.maxRenderTimeoutMs) {
+            context.renderExecutor.run { errorImageRenderer(excerpt, message, requestId) }
+        }
+    } catch (error: TimeoutCancellationException) {
+        application.environment.log.warn("Parse error image timed out requestId=$requestId")
+        return null
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        application.environment.log.warn("Failed to render parse error image requestId=$requestId", error)
+        return null
+    }
+
+    response.headers.append(ERROR_IMAGE_CODE_HEADER, code)
+    parseError.pos.pos.takeIf { it >= 0 }?.let { response.headers.append(ERROR_IMAGE_POSITION_HEADER, it.toString()) }
+    response.headers.append(ERROR_IMAGE_LOCATION_HEADER, excerpt.location)
+    return bytes
+}
+
+private fun Throwable.findParseException(): com.muedsa.snapshot.parser.ParseException? =
+    generateSequence(this) { it.cause }.filterIsInstance<com.muedsa.snapshot.parser.ParseException>().firstOrNull()
 
 /** 流式读取请求体，超过上限立即失败，不依赖 Content-Length。 */
 internal suspend fun ApplicationCall.receiveLimitedText(maxBytes: Long): String {

@@ -31,6 +31,12 @@ snapshot:
     max-entries: 256
     max-bytes: 67108864
     ttl-ms: 60000
+  # 解析错误高亮图：请求带 ?errorImage=png 时把解析错误渲染成图片。
+  error-image:
+    enabled: true
+    max-lines: 8
+    max-columns: 80
+    context-lines: 2
   # 留空表示开放调用；填写后 /snapshot 需要 X-API-Key 或 Authorization: Bearer。
   # 需要多个 Key 时改用下面的 api-keys 列表或 SNAPSHOT_API_KEYS 环境变量。
   # 建议通过环境变量注入，避免出现在进程命令行里。

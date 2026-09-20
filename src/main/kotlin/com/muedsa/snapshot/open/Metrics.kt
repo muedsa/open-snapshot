@@ -245,6 +245,16 @@ internal object Metrics {
         imageRevalidations.inc(listOf(result))
     }
 
+    val errorImages = LabeledCounter(
+        name = "snapshot_error_images_total",
+        help = "Parse error image requests by result: served, fallback or unsupported.",
+        labelNames = listOf("result"),
+    )
+
+    fun errorImageServed(result: String) {
+        errorImages.inc(listOf(result))
+    }
+
     val rateLimited = LabeledCounter(
         name = "snapshot_rate_limited_total",
         help = "Requests rejected by rate limiting, by limit scope.",
@@ -396,6 +406,7 @@ internal object Metrics {
             )
         )
         append(imageRevalidations.render())
+        append(errorImages.render())
         val (cacheEntries, cacheBytes) = imageCacheInfo()
         append(renderGauge("snapshot_image_cache_entries", "Images held in the memory cache.", cacheEntries.toLong()))
         append(renderGauge("snapshot_image_cache_bytes", "Estimated bytes held in the memory cache.", cacheBytes.toLong()))

@@ -58,6 +58,7 @@ private fun Application.configureRoutingInternal(
             maxPixels = config.canvas.maxPixels,
         ),
         renderExecutor = renderExecutor,
+        errorImage = config.errorImage,
     )
 
     routing {

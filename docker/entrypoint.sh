@@ -27,6 +27,18 @@ fi
 if [ -n "${SNAPSHOT_RENDER_CACHE_TTL_MS:-}" ]; then
     set -- "$@" "-P:snapshot.render-cache.ttl-ms=${SNAPSHOT_RENDER_CACHE_TTL_MS}"
 fi
+if [ -n "${SNAPSHOT_ERROR_IMAGE_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.error-image.enabled=${SNAPSHOT_ERROR_IMAGE_ENABLED}"
+fi
+if [ -n "${SNAPSHOT_ERROR_IMAGE_MAX_LINES:-}" ]; then
+    set -- "$@" "-P:snapshot.error-image.max-lines=${SNAPSHOT_ERROR_IMAGE_MAX_LINES}"
+fi
+if [ -n "${SNAPSHOT_ERROR_IMAGE_MAX_COLUMNS:-}" ]; then
+    set -- "$@" "-P:snapshot.error-image.max-columns=${SNAPSHOT_ERROR_IMAGE_MAX_COLUMNS}"
+fi
+if [ -n "${SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES:-}" ]; then
+    set -- "$@" "-P:snapshot.error-image.context-lines=${SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES}"
+fi
 if [ -n "${SNAPSHOT_ACCESS_LOG_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.access-log-enabled=${SNAPSHOT_ACCESS_LOG_ENABLED}"
 fi
