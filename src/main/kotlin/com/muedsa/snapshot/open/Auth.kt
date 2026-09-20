@@ -3,43 +3,79 @@ package com.muedsa.snapshot.open
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.header
-import java.security.MessageDigest
 
 /** 开放接口的 API Key 请求头，与 `Authorization: Bearer` 二选一。 */
 internal const val API_KEY_HEADER = "X-API-Key"
 
 /**
- * 可选鉴权：仅在配置了 `snapshot.api-key` 或 `SNAPSHOT_API_KEY` 后启用。
+ * 开放接口鉴权：未配置任何客户端凭据时保持开放；配置后要求有效凭据。
  *
- * 兼容两种携带方式：`X-API-Key: <key>` 与 `Authorization: Bearer <key>`，
- * 比较使用定长比较，避免通过响应时间推断密钥。
+ * 凭据通过 [CallIdentity] 解析，支持多个 API Key 与平滑轮换（新旧 Key 可同时在列）。
  */
-internal suspend fun ApplicationCall.authorizeApiKey(expectedKey: String): Boolean {
-    val supplied = request.header(API_KEY_HEADER)?.takeIf(String::isNotBlank)
-        ?: request.header(HttpHeaders.Authorization)
-            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
-            ?.substring(7)
-            ?.takeIf(String::isNotBlank)
+internal suspend fun ApplicationCall.requireRenderCredential(): Boolean {
+    if (!application.credentialStore().requiresCredential) return true
+    if (identity().isAuthenticated) return true
 
-    if (supplied != null && MessageDigest.isEqual(
-            expectedKey.toByteArray(Charsets.UTF_8),
-            supplied.toByteArray(Charsets.UTF_8),
+    Metrics.renderFailed(ErrorCodes.UNAUTHORIZED)
+    respondUnauthorized("A valid API key is required")
+    return false
+}
+
+/**
+ * 管理接口鉴权：接受管理令牌，或带 `admin: true` 的 API Key。
+ *
+ * 已认证但不具备管理权限返回 `403 FORBIDDEN`；未认证返回 `401 UNAUTHORIZED`。
+ */
+internal suspend fun ApplicationCall.requireAdmin(): Boolean {
+    val current = identity()
+    if (current.isAdmin) return true
+
+    if (current.isAuthenticated) {
+        Metrics.renderFailed(ErrorCodes.FORBIDDEN)
+        respondApiError(
+            this,
+            ApiError(
+                code = ErrorCodes.FORBIDDEN,
+                message = "An admin credential is required",
+                requestId = ensureRequestIdHeader(),
+                status = HttpStatusCode.Forbidden,
+            ),
         )
-    ) {
-        return true
+        return false
     }
 
     Metrics.renderFailed(ErrorCodes.UNAUTHORIZED)
+    respondUnauthorized("A valid admin bearer token is required")
+    return false
+}
+
+/** `/metrics` 访问控制；`/health`、`/ready` 探针不使用该检查。 */
+internal suspend fun ApplicationCall.authorizeMetrics(): Boolean =
+    when (application.snapshotConfig().metricsAccess) {
+        MetricsAccess.OPEN -> true
+
+        MetricsAccess.CREDENTIAL -> {
+            if (identity().isAuthenticated) {
+                true
+            } else {
+                Metrics.renderFailed(ErrorCodes.UNAUTHORIZED)
+                respondUnauthorized("A valid API key is required to read metrics")
+                false
+            }
+        }
+
+        MetricsAccess.ADMIN -> requireAdmin()
+    }
+
+private suspend fun ApplicationCall.respondUnauthorized(message: String) {
     response.headers.append(HttpHeaders.WWWAuthenticate, "Bearer")
     respondApiError(
         this,
         ApiError(
             code = ErrorCodes.UNAUTHORIZED,
-            message = "A valid API key is required",
+            message = message,
             requestId = ensureRequestIdHeader(),
             status = HttpStatusCode.Unauthorized,
         ),
     )
-    return false
 }

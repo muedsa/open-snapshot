@@ -192,8 +192,11 @@ fun Application.configureObservability() {
             val startedAtNanos = call.attributes.getOrNull(RequestStartNanosKey)
             val durationNanos = startedAtNanos?.let { System.nanoTime() - it } ?: -1L
             Metrics.observeHttp(call.request.httpMethod.value, path, status, durationNanos)
-            if (status == HttpStatusCode.TooManyRequests.value && metricPathLabel(path) == "/snapshot") {
-                Metrics.renderFailed(ErrorCodes.RATE_LIMITED)
+            if (status == HttpStatusCode.TooManyRequests.value) {
+                Metrics.rateLimitExceeded(call.rateLimitedScope() ?: RATE_LIMIT_SCOPE_UNKNOWN)
+                if (metricPathLabel(path) == "/snapshot") {
+                    Metrics.renderFailed(ErrorCodes.RATE_LIMITED)
+                }
             }
             if (accessLogEnabled && path !in accessLogSkipPaths) {
                 logger.info(
@@ -237,6 +240,7 @@ fun Application.configureObservability() {
 
         if (metricsEnabled) {
             get("/metrics") {
+                if (!call.authorizeMetrics()) return@get
                 call.respondText(Metrics.scrape(), PROMETHEUS_CONTENT_TYPE)
             }
         }

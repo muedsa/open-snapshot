@@ -48,6 +48,7 @@ internal fun renderOutcome(code: String): String = when (code) {
     ErrorCodes.SERVICE_UNAVAILABLE -> "unavailable"
     ErrorCodes.NOT_READY -> "not_ready"
     ErrorCodes.UNAUTHORIZED -> "unauthorized"
+    ErrorCodes.FORBIDDEN -> "forbidden"
     else -> "internal_error"
 }
 
@@ -217,6 +218,16 @@ internal object Metrics {
     val imageDownloads = Counter()
     val imageDownloadFailures = Counter()
 
+    val rateLimited = LabeledCounter(
+        name = "snapshot_rate_limited_total",
+        help = "Requests rejected by rate limiting, by limit scope.",
+        labelNames = listOf("scope"),
+    )
+
+    fun rateLimitExceeded(scope: String) {
+        rateLimited.inc(listOf(scope))
+    }
+
     fun renderSucceeded(durationNanos: Long, outputBytes: Int) {
         renders.inc(listOf("success"))
         renderDuration.observe(durationNanos / NANOS_PER_SECOND)
@@ -263,6 +274,7 @@ internal object Metrics {
         )
         append(renders.render())
         append(renderDuration.render())
+        append(rateLimited.render())
         append(httpRequests.render())
         append(httpDuration.render())
         append(

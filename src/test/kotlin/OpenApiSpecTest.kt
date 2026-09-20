@@ -16,7 +16,9 @@ import kotlin.test.assertTrue
 class OpenApiSpecTest {
 
     private val specFile = File("docs/openapi.yaml")
-    private val specText = specFile.readText()
+
+    /** 统一换行符，避免 Windows 检出（CRLF）影响按行匹配的断言。 */
+    private val specText = specFile.readText().replace("\r\n", "\n")
 
     @Test
     fun `document is valid yaml and loadable as ktor config`() {

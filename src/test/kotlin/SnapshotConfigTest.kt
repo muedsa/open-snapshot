@@ -1,5 +1,7 @@
 package com.muedsa.snapshot
 
+import com.muedsa.snapshot.open.ApiCredential
+import com.muedsa.snapshot.open.MetricsAccess
 import com.muedsa.snapshot.open.SnapshotConfigLoader
 import com.muedsa.snapshot.open.SnapshotConfigurationException
 import io.ktor.server.config.MapApplicationConfig
@@ -27,12 +29,18 @@ class SnapshotConfigTest {
         assertEquals(10_000, config.image.connectTimeoutMs)
         assertEquals(10_000, config.image.readTimeoutMs)
         assertEquals(false, config.image.allowPrivateHosts)
-        assertEquals(6, config.rateLimit.requests)
-        assertEquals(60_000L, config.rateLimit.windowMs)
+        assertEquals(6, config.rateLimit.anonymousRequests)
+        assertEquals(60_000L, config.rateLimit.anonymousWindowMs)
+        assertEquals(60, config.rateLimit.credentialRequests)
+        assertEquals(60_000L, config.rateLimit.credentialWindowMs)
+        assertEquals(6, config.rateLimit.adminRequests)
+        assertEquals(60_000L, config.rateLimit.adminWindowMs)
         assertEquals(false, config.cors.trustProxyHeaders)
         assertEquals(false, config.admin.enabled)
         assertNull(config.admin.token)
         assertNull(config.apiKey)
+        assertEquals(emptyList(), config.credentials)
+        assertEquals(MetricsAccess.OPEN, config.metricsAccess)
         assertEquals(true, config.accessLog.enabled)
         assertEquals(setOf("/health", "/ready", "/metrics"), config.accessLog.skipPaths)
         assertEquals(true, config.metricsEnabled)
@@ -88,7 +96,7 @@ class SnapshotConfigTest {
     }
 
     @Test
-    fun `admin endpoints require a token`() {
+    fun `admin endpoints require a token or an admin api key`() {
         val error = assertFailsWith<SnapshotConfigurationException> {
             SnapshotConfigLoader.load(
                 MapApplicationConfig("snapshot.admin-endpoints-enabled" to "true"),
@@ -106,6 +114,19 @@ class SnapshotConfigTest {
         )
         assertEquals(true, config.admin.enabled)
         assertEquals("configured-token", config.admin.token)
+
+        // 只配置 admin: true 的 API Key 也允许启用管理接口。
+        val withAdminKey = SnapshotConfigLoader.load(
+            MapApplicationConfig(
+                "snapshot.admin-endpoints-enabled" to "true",
+                "snapshot.api-keys.size" to "1",
+                "snapshot.api-keys.0.name" to "ops",
+                "snapshot.api-keys.0.key" to "ops-api-key-0123456789",
+                "snapshot.api-keys.0.admin" to "true",
+            ),
+            env = { null },
+        )
+        assertTrue(withAdminKey.credentials.single().admin)
     }
 
     @Test
@@ -149,5 +170,143 @@ class SnapshotConfigTest {
         )
 
         assertNull(config.apiKey)
+    }
+
+    @Test
+    fun `api keys are read from the configuration list`() {
+        val source = MapApplicationConfig().apply {
+            put("snapshot.api-keys.size", "2")
+            put("snapshot.api-keys.0.name", "web-frontend")
+            put("snapshot.api-keys.0.key", "web-api-key-0123456789")
+            put("snapshot.api-keys.1.name", "ops")
+            put("snapshot.api-keys.1.key", "ops-api-key-0123456789")
+            put("snapshot.api-keys.1.admin", "true")
+        }
+
+        val config = SnapshotConfigLoader.load(source, env = { null })
+
+        assertEquals(2, config.credentials.size)
+        assertEquals(ApiCredential("web-frontend", "web-api-key-0123456789", admin = false), config.credentials[0])
+        assertEquals(ApiCredential("ops", "ops-api-key-0123456789", admin = true), config.credentials[1])
+        assertTrue(config.requiresCredential)
+    }
+
+    @Test
+    fun `api keys can be provided by environment variable`() {
+        val config = SnapshotConfigLoader.load(
+            MapApplicationConfig(),
+            env = { name ->
+                if (name == "SNAPSHOT_API_KEYS") "web:web-api-key-0123456789,partner:partner-api-key-0123456789" else null
+            },
+        )
+
+        assertEquals(listOf("web", "partner"), config.credentials.map { it.name })
+        assertEquals(listOf(false, false), config.credentials.map { it.admin })
+    }
+
+    @Test
+    fun `environment api keys support the admin flag`() {
+        val config = SnapshotConfigLoader.load(
+            MapApplicationConfig(),
+            env = { name ->
+                if (name == "SNAPSHOT_API_KEYS") "web:web-api-key-0123456789,ops:ops-api-key-0123456789:admin" else null
+            },
+        )
+
+        assertEquals(listOf("web", "ops"), config.credentials.map { it.name })
+        assertEquals(listOf(false, true), config.credentials.map { it.admin })
+
+        val error = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(),
+                env = { name ->
+                    if (name == "SNAPSHOT_API_KEYS") "ops:ops-api-key-0123456789:root" else null
+                },
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("'admin'"), error.message.orEmpty())
+    }
+
+    @Test
+    fun `malformed api keys environment entry is reported`() {
+        val error = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(),
+                env = { name -> if (name == "SNAPSHOT_API_KEYS") "web-api-key-0123456789" else null },
+            )
+        }
+
+        assertTrue(error.message.orEmpty().contains("SNAPSHOT_API_KEYS"), error.message.orEmpty())
+    }
+
+    @Test
+    fun `api key constraints are validated`() {
+        val duplicateNames = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(),
+                env = { name ->
+                    if (name == "SNAPSHOT_API_KEYS") "web:key-0000000000000001,web:key-0000000000000002" else null
+                },
+            )
+        }
+        assertTrue(duplicateNames.message.orEmpty().contains("unique"), duplicateNames.message.orEmpty())
+
+        val badName = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(),
+                env = { name -> if (name == "SNAPSHOT_API_KEYS") "bad name:key-0000000000000001" else null },
+            )
+        }
+        assertTrue(badName.message.orEmpty().contains("must match"), badName.message.orEmpty())
+
+        val tooShort = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig(),
+                env = { name -> if (name == "SNAPSHOT_API_KEYS") "web:short" else null },
+            )
+        }
+        assertTrue(tooShort.message.orEmpty().contains("at least"), tooShort.message.orEmpty())
+    }
+
+    @Test
+    fun `metrics access mode is parsed and validated`() {
+        MetricsAccess.entries.forEach { mode ->
+            val value = mode.name.lowercase()
+            val config = SnapshotConfigLoader.load(
+                MapApplicationConfig("snapshot.metrics-access" to value),
+                env = { null },
+            )
+            assertEquals(mode, config.metricsAccess)
+        }
+
+        val error = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig("snapshot.metrics-access" to "sometimes"),
+                env = { null },
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("snapshot.metrics-access"), error.message.orEmpty())
+    }
+
+    @Test
+    fun `rate limit tiers are configurable`() {
+        val config = SnapshotConfigLoader.load(
+            MapApplicationConfig(
+                "snapshot.rate-limit.requests" to "3",
+                "snapshot.rate-limit.window-ms" to "30000",
+                "snapshot.rate-limit.credential-requests" to "120",
+                "snapshot.rate-limit.credential-window-ms" to "90000",
+                "snapshot.rate-limit.admin-requests" to "2",
+                "snapshot.rate-limit.admin-window-ms" to "45000",
+            ),
+            env = { null },
+        )
+
+        assertEquals(3, config.rateLimit.anonymousRequests)
+        assertEquals(30_000L, config.rateLimit.anonymousWindowMs)
+        assertEquals(120, config.rateLimit.credentialRequests)
+        assertEquals(90_000L, config.rateLimit.credentialWindowMs)
+        assertEquals(2, config.rateLimit.adminRequests)
+        assertEquals(45_000L, config.rateLimit.adminWindowMs)
     }
 }

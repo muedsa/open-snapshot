@@ -14,6 +14,7 @@ internal object ErrorCodes {
     const val SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     const val NOT_READY = "NOT_READY"
     const val UNAUTHORIZED = "UNAUTHORIZED"
+    const val FORBIDDEN = "FORBIDDEN"
     const val INTERNAL_ERROR = "INTERNAL_ERROR"
 
     val ALL: Set<String> = setOf(
@@ -27,6 +28,7 @@ internal object ErrorCodes {
         SERVICE_UNAVAILABLE,
         NOT_READY,
         UNAUTHORIZED,
+        FORBIDDEN,
         INTERNAL_ERROR,
     )
 }
