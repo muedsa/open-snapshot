@@ -86,6 +86,14 @@ internal data class RenderQueueSettings(
     val queueTimeoutMs: Long,
 )
 
+/** 解析错误高亮图配置。 */
+internal data class ErrorImageSettings(
+    val enabled: Boolean,
+    val maxLines: Int,
+    val maxColumns: Int,
+    val contextLines: Int,
+)
+
 /**
  * 服务运行配置的唯一来源。
  *
@@ -102,6 +110,7 @@ internal class SnapshotConfig(
     val rateLimit: RateLimitSettings,
     val renderCache: RenderCacheSettings,
     val renderQueue: RenderQueueSettings,
+    val errorImage: ErrorImageSettings,
     val cors: CorsSettings,
     val admin: AdminSettings,
     /** 匿名调用方是否开放；由是否配置客户端凭据决定。 */
@@ -253,6 +262,12 @@ internal object SnapshotConfigLoader {
                     "snapshot.render-queue-timeout-ms",
                     RenderExecutor.DEFAULT_QUEUE_TIMEOUT_MS,
                 ),
+            ),
+            errorImage = ErrorImageSettings(
+                enabled = boolean("snapshot.error-image.enabled", true),
+                maxLines = positiveInt("snapshot.error-image.max-lines", 8),
+                maxColumns = positiveInt("snapshot.error-image.max-columns", 80),
+                contextLines = nonNegativeInt("snapshot.error-image.context-lines", 2),
             ),
             cors = CorsSettings(
                 allowedHosts = config.tryGetStringList("snapshot.cors.allowed-hosts").orEmpty(),
