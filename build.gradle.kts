@@ -36,10 +36,8 @@ dependencies {
     implementation(ktorLibs.server.cors)
     implementation(ktorLibs.server.forwardedHeader)
     implementation(ktorLibs.server.netty)
-    implementation(libs.flaxoos.ktor.server.rateLimiting)
+    implementation(ktorLibs.server.rateLimit)
     implementation(libs.logback.classic)
-    implementation(libs.ucasoft.ktorSimpleCache)
-    implementation(libs.ucasoft.ktorSimpleMemoryCache)
 
     implementation(libs.snapshot.parser)
     implementation(versionCatalog.findLibrary("skiko-$targetOs-$targetArch").get())

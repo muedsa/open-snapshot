@@ -101,14 +101,22 @@ private class LimitedNetworkImageCache(
             connectTimeout = 10_000
             readTimeout = 10_000
         }
-        if (connection is HttpURLConnection) {
-            connection.instanceFollowRedirects = false
-            require(connection.responseCode in 200..299) {
-                "Image server returned HTTP ${connection.responseCode}"
+        return try {
+            if (connection is HttpURLConnection) {
+                connection.instanceFollowRedirects = false
+                require(connection.responseCode in 200..299) {
+                    "Image server returned HTTP ${connection.responseCode}"
+                }
             }
-        }
-        return connection.getInputStream().use {
-            LimitedImageInputStream(it, maxSingleImageSize).readBytes()
+            val contentLength = connection.contentLengthLong
+            require(contentLength < 0 || contentLength <= maxSingleImageSize.toLong()) {
+                "Image response size $contentLength exceeds maximum $maxSingleImageSize bytes"
+            }
+            connection.getInputStream().use {
+                LimitedImageInputStream(it, maxSingleImageSize).readBytes()
+            }
+        } finally {
+            (connection as? HttpURLConnection)?.disconnect()
         }
     }
 
@@ -117,11 +125,62 @@ private class LimitedNetworkImageCache(
         if (normalized == "localhost" || normalized.endsWith(".localhost") ||
             normalized == "metadata.google.internal" || normalized == "metadata" ||
             normalized == "instance-data") return true
-        return InetAddress.getAllByName(normalized).any {
-            it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
-                it.isSiteLocalAddress || it.isMulticastAddress
-        }
+        return InetAddress.getAllByName(normalized).any(::isBlockedImageAddress)
     }
+}
+
+internal fun isBlockedImageAddress(address: InetAddress): Boolean {
+    if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress ||
+        address.isSiteLocalAddress || address.isMulticastAddress
+    ) {
+        return true
+    }
+
+    val bytes = address.address.map(Byte::toInt).map { it and 0xff }
+    return when (bytes.size) {
+        4 -> isBlockedIpv4(bytes)
+        16 -> isBlockedIpv6(bytes)
+        else -> true
+    }
+}
+
+private fun isBlockedIpv4(bytes: List<Int>): Boolean {
+    val (a, b, c) = bytes
+    return a == 0 ||
+        a == 10 ||
+        (a == 100 && b in 64..127) ||
+        a == 127 ||
+        (a == 169 && b == 254) ||
+        (a == 172 && b in 16..31) ||
+        (a == 192 && b == 0 && c == 0) ||
+        (a == 192 && b == 0 && c == 2) ||
+        (a == 192 && b == 88 && c == 99) ||
+        (a == 192 && b == 168) ||
+        (a == 198 && b in 18..19) ||
+        (a == 198 && b == 51 && c == 100) ||
+        (a == 203 && b == 0 && c == 113) ||
+        a >= 224
+}
+
+private fun isBlockedIpv6(bytes: List<Int>): Boolean {
+    if ((bytes[0] and 0xfe) == 0xfc || bytes[0] == 0xff) return true
+    if (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8) return true
+
+    val isIpv4Mapped = bytes.take(10).all { it == 0 } && bytes[10] == 0xff && bytes[11] == 0xff
+    val isIpv4Compatible = bytes.take(12).all { it == 0 }
+    if (isIpv4Mapped || isIpv4Compatible) {
+        return isBlockedIpv4(bytes.takeLast(4))
+    }
+
+    val isNat64WellKnown = bytes.take(12) == listOf(0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0)
+    if (isNat64WellKnown && isBlockedIpv4(bytes.takeLast(4))) return true
+
+    val isSixToFour = bytes[0] == 0x20 && bytes[1] == 0x02
+    if (isSixToFour) {
+        return isBlockedIpv4(bytes.subList(2, 6))
+    }
+
+    return false
 }
 
 private var memoryImageCache: MemoryImageCache? = null

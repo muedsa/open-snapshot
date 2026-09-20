@@ -22,10 +22,18 @@ curl -X POST http://localhost:8080/snapshot `
 | 接口 | 说明 |
 |---|---|
 | `GET /health` | 健康检查 |
-| `GET /fonts` | 返回可用字体列表 |
-| `GET /fonts.png` | 返回字体预览图 |
-| `GET /cacheInfo` | 查看网络图片缓存统计（需显式开启） |
-| `POST /cacheClear` | 清理网络图片缓存（需显式开启） |
+| `GET /fonts` | 返回可用字体列表（管理接口） |
+| `GET /fonts.png` | 返回字体预览图（管理接口） |
+| `GET /cacheInfo` | 查看网络图片缓存统计（管理接口） |
+| `POST /cacheClear` | 清理网络图片缓存（管理接口） |
+
+管理接口默认不注册。启用时必须同时设置强随机令牌，并通过
+`Authorization: Bearer <token>` 访问：
+
+```dotenv
+SNAPSHOT_ADMIN_ENDPOINTS_ENABLED=true
+SNAPSHOT_ADMIN_TOKEN=replace-with-a-long-random-token
+```
 
 ## 运行配置
 
@@ -33,9 +41,13 @@ curl -X POST http://localhost:8080/snapshot `
 
 ```yaml
 snapshot:
+  trust-proxy-headers: false
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  rate-limit:
+    requests: 6
+    window-ms: 60000
   max-canvas-width: 4096
   max-canvas-height: 4096
   max-canvas-pixels: 16777216
@@ -112,13 +124,15 @@ cp .env.example .env
 HTTP_PORT=8080
 SNAPSHOT_MAX_CONCURRENT_RENDERS=2
 SNAPSHOT_MAX_RENDER_TIMEOUT_MS=20000
+SNAPSHOT_RATE_LIMIT_REQUESTS=6
+SNAPSHOT_RATE_LIMIT_WINDOW_MS=60000
 SNAPSHOT_MAX_CANVAS_PIXELS=8388608
 SNAPSHOT_MAX_IMAGE_NUM=5
 SNAPSHOT_MAX_CACHE_BYTES=134217728
 SNAPSHOT_ALLOW_PRIVATE_HOSTS=false
 ```
 
-配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。GitHub PAT 等秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
+配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名和字体族属于列表配置，建议直接修改挂载的 YAML。管理令牌可通过 `SNAPSHOT_ADMIN_TOKEN` 注入，不会被转换为 JVM 命令行参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
 
 容器拓扑为 `Internet -> Nginx -> open-snapshot:8080`，应用端口不会直接暴露到宿主机。Nginx 默认包含：
 
@@ -127,6 +141,10 @@ SNAPSHOT_ALLOW_PRIVATE_HOSTS=false
 - 35 秒上游读取超时；
 - `X-Forwarded-*` 与 `X-Request-Id` 请求头；
 - `/health` 健康检查。
+
+应用默认不信任客户端传入的 Forwarded Header。Compose 会在应用端口仅对内部网络可见时设置
+`SNAPSHOT_TRUST_PROXY_HEADERS=true`，同时 Nginx 会覆盖而不是追加客户端提供的
+`X-Forwarded-For`。如果直接将应用端口暴露到公网，请保持该选项为 `false`。
 
 生产环境建议在 Nginx 前或 Nginx 内配置 TLS。若由云负载均衡器或 CDN 终止 TLS，当前配置可以直接作为内部 HTTP 反代使用。
 
@@ -167,10 +185,8 @@ Here's a list of features included in this project:
 
 | Name | Description |
 |------|-------------|
-| [Simple Cache](https://start.ktor.io/p/com.ucasoft/server-simple-cache) | Provides API for cache management |
 | [Forwarded Headers](https://start.ktor.io/p/io.ktor/server-forwarded-header-support) | Allows handling proxied headers (X-Forwarded-*) |
-| [Simple Memory Cache](https://start.ktor.io/p/com.ucasoft/server-simple-memory-cache) | Provides memory cache for Simple Cache plugin |
-| [Rate Limiting](https://start.ktor.io/p/io.github.flaxoos/server-rate-limiting) | Manage request rate limiting as you see fit |
+| [Rate Limiting](https://ktor.io/docs/server-rate-limit.html) | Ktor 官方按来源 IP 的请求限流 |
 | [Content Negotiation](https://start.ktor.io/p/io.ktor/server-content-negotiation) | Provides automatic content conversion according to Content-Type and Accept headers |
 | [CORS](https://start.ktor.io/p/io.ktor/server-cors) | Enables Cross-Origin Resource Sharing (CORS) |
 

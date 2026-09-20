@@ -12,6 +12,12 @@ fi
 if [ -n "${SNAPSHOT_MAX_RENDER_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.max-render-timeout-ms=${SNAPSHOT_MAX_RENDER_TIMEOUT_MS}"
 fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_REQUESTS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.requests=${SNAPSHOT_RATE_LIMIT_REQUESTS}"
+fi
+if [ -n "${SNAPSHOT_RATE_LIMIT_WINDOW_MS:-}" ]; then
+    set -- "$@" "-P:snapshot.rate-limit.window-ms=${SNAPSHOT_RATE_LIMIT_WINDOW_MS}"
+fi
 if [ -n "${SNAPSHOT_MAX_CANVAS_WIDTH:-}" ]; then
     set -- "$@" "-P:snapshot.max-canvas-width=${SNAPSHOT_MAX_CANVAS_WIDTH}"
 fi
@@ -20,6 +26,9 @@ if [ -n "${SNAPSHOT_MAX_CANVAS_HEIGHT:-}" ]; then
 fi
 if [ -n "${SNAPSHOT_MAX_CANVAS_PIXELS:-}" ]; then
     set -- "$@" "-P:snapshot.max-canvas-pixels=${SNAPSHOT_MAX_CANVAS_PIXELS}"
+fi
+if [ -n "${SNAPSHOT_TRUST_PROXY_HEADERS:-}" ]; then
+    set -- "$@" "-P:snapshot.trust-proxy-headers=${SNAPSHOT_TRUST_PROXY_HEADERS}"
 fi
 if [ -n "${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.admin-endpoints-enabled=${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED}"

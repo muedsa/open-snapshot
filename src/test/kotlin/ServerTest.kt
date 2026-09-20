@@ -9,8 +9,11 @@ import io.ktor.server.testing.testApplication
 import kotlin.test.*
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.util.Base64
 import com.muedsa.snapshot.open.configureImageCache
+import com.muedsa.snapshot.open.configureRoutingForTests
+import com.muedsa.snapshot.open.isBlockedImageAddress
 
 class ServerTest {
 
@@ -45,6 +48,26 @@ class ServerTest {
         assertEquals(HttpStatusCode.OK, response.status)
         assertEquals("http://localhost:3000", response.headers[HttpHeaders.AccessControlAllowOrigin])
         assertTrue(response.headers[HttpHeaders.AccessControlAllowMethods].orEmpty().contains("POST"))
+    }
+
+    @Test
+    fun `snapshot rate limit applies only to render endpoint`() = testApplication {
+        configure()
+        val source = "<Snapshot type=\"png\"><Container width=\"1\" height=\"1\" color=\"#FFFFFFFF\"/></Snapshot>"
+
+        repeat(6) {
+            val response = client.post("/snapshot") {
+                header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+                setBody(source)
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+        }
+
+        assertEquals(HttpStatusCode.TooManyRequests, client.post("/snapshot") {
+            header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+            setBody(source)
+        }.status)
+        assertEquals(HttpStatusCode.OK, client.get("/health").status)
     }
 
     @Test
@@ -122,13 +145,30 @@ class ServerTest {
     }
 
     @Test
-    fun `fonts endpoint returns font names`() = testApplication {
+    fun `admin endpoints are disabled by default`() = testApplication {
         configure()
 
-        val response = client.get("/fonts")
+        assertEquals(HttpStatusCode.NotFound, client.get("/fonts").status)
+        assertEquals(HttpStatusCode.NotFound, client.get("/fonts.png").status)
+        assertEquals(HttpStatusCode.NotFound, client.get("/cacheInfo").status)
+    }
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(response.body<String>().isNotBlank())
+    @Test
+    fun `admin endpoints require bearer token`() = testApplication {
+        application {
+            configureRoutingForTests("test-admin-token")
+        }
+
+        val unauthorized = client.get("/fonts")
+        assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+        assertTrue(unauthorized.body<String>().contains("UNAUTHORIZED"))
+
+        val authorized = client.get("/fonts") {
+            bearerAuth("test-admin-token")
+        }
+
+        assertEquals(HttpStatusCode.OK, authorized.status)
+        assertTrue(authorized.body<String>().isNotBlank())
     }
 
     @Test
@@ -193,6 +233,39 @@ class ServerTest {
 
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertTrue(response.body<String>().contains("IMAGE_LOAD_ERROR"))
+    }
+
+    @Test
+    fun `image address policy blocks private and reserved networks`() {
+        val blocked = listOf(
+            "0.0.0.0",
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.0.2.1",
+            "192.168.0.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "fc00::1",
+            "fd12:3456:789a::1",
+            "fe80::1",
+            "ff02::1",
+            "2001:db8::1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:0a00:0001::1",
+        )
+        blocked.forEach { literal ->
+            assertTrue(isBlockedImageAddress(InetAddress.getByName(literal)), literal)
+        }
+
+        listOf("1.1.1.1", "8.8.8.8", "2606:4700:4700::1111").forEach { literal ->
+            assertFalse(isBlockedImageAddress(InetAddress.getByName(literal)), literal)
+        }
     }
 
     private fun assertContentStartsWith(actual: ByteArray, expectedPrefix: ByteArray) {
