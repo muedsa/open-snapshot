@@ -3,6 +3,12 @@ set -eu
 
 set -- "-config=${APP_CONFIG_FILE:-/app/config/application.yaml}"
 
+if [ -n "${SNAPSHOT_SERVER_HOST:-}" ]; then
+    set -- "$@" "-P:ktor.deployment.host=${SNAPSHOT_SERVER_HOST}"
+fi
+if [ -n "${SNAPSHOT_SERVER_PORT:-}" ]; then
+    set -- "$@" "-P:ktor.deployment.port=${SNAPSHOT_SERVER_PORT}"
+fi
 if [ -n "${SNAPSHOT_MAX_REQUEST_SIZE:-}" ]; then
     set -- "$@" "-P:snapshot.max-request-size=${SNAPSHOT_MAX_REQUEST_SIZE}"
 fi
@@ -24,6 +30,9 @@ fi
 if [ -n "${SNAPSHOT_RENDER_CACHE_MAX_ENTRIES:-}" ]; then
     set -- "$@" "-P:snapshot.render-cache.max-entries=${SNAPSHOT_RENDER_CACHE_MAX_ENTRIES}"
 fi
+if [ -n "${SNAPSHOT_RENDER_CACHE_MAX_BYTES:-}" ]; then
+    set -- "$@" "-P:snapshot.render-cache.max-bytes=${SNAPSHOT_RENDER_CACHE_MAX_BYTES}"
+fi
 if [ -n "${SNAPSHOT_RENDER_CACHE_TTL_MS:-}" ]; then
     set -- "$@" "-P:snapshot.render-cache.ttl-ms=${SNAPSHOT_RENDER_CACHE_TTL_MS}"
 fi
@@ -41,6 +50,15 @@ if [ -n "${SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES:-}" ]; then
 fi
 if [ -n "${SNAPSHOT_TIMING_HEADERS_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.timing-headers.enabled=${SNAPSHOT_TIMING_HEADERS_ENABLED}"
+fi
+if [ -n "${SNAPSHOT_CORS_ALLOWED_HOSTS:-}" ]; then
+    set -- "$@" "-P:snapshot.cors.allowed-hosts=${SNAPSHOT_CORS_ALLOWED_HOSTS}"
+fi
+if [ -n "${SNAPSHOT_FONT_FAMILY_NAMES:-}" ]; then
+    set -- "$@" "-P:snapshot.font-family-names=${SNAPSHOT_FONT_FAMILY_NAMES}"
+fi
+if [ -n "${SNAPSHOT_ACCESS_LOG_SKIP_PATHS:-}" ]; then
+    set -- "$@" "-P:snapshot.access-log-skip-paths=${SNAPSHOT_ACCESS_LOG_SKIP_PATHS}"
 fi
 if [ -n "${SNAPSHOT_ACCESS_LOG_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.access-log-enabled=${SNAPSHOT_ACCESS_LOG_ENABLED}"
