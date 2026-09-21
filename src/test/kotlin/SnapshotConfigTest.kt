@@ -163,6 +163,49 @@ class SnapshotConfigTest {
     }
 
     @Test
+    fun `list settings accept a single comma separated value`() {
+        // 环境变量 / -P 覆盖只能传单个字符串，此时按英文逗号分隔。
+        val config = SnapshotConfigLoader.load(
+            MapApplicationConfig(
+                "snapshot.cors.allowed-hosts" to "localhost:3000,127.0.0.1:3000",
+                "snapshot.font-family-names" to "Inter,Noto Serif SC",
+                "snapshot.access-log-skip-paths" to "/health,/ready",
+            ),
+            env = { null },
+        )
+
+        assertEquals(listOf("localhost:3000", "127.0.0.1:3000"), config.cors.allowedHosts)
+        assertEquals(listOf("Inter", "Noto Serif SC"), config.fontFamilyNames)
+        assertEquals(setOf("/health", "/ready"), config.accessLog.skipPaths)
+    }
+
+    @Test
+    fun `list settings accept yaml style lists`() {
+        val source = MapApplicationConfig().apply {
+            put("snapshot.cors.allowed-hosts", listOf("localhost:3000", "127.0.0.1:3000"))
+            put("snapshot.font-family-names", listOf("Inter", "Noto Serif SC"))
+            put("snapshot.access-log-skip-paths", listOf("/health"))
+        }
+
+        val config = SnapshotConfigLoader.load(source, env = { null })
+
+        assertEquals(listOf("localhost:3000", "127.0.0.1:3000"), config.cors.allowedHosts)
+        assertEquals(listOf("Inter", "Noto Serif SC"), config.fontFamilyNames)
+        assertEquals(setOf("/health"), config.accessLog.skipPaths)
+    }
+
+    @Test
+    fun `single element yaml list is still split by commas`() {
+        val source = MapApplicationConfig().apply {
+            put("snapshot.cors.allowed-hosts", listOf("localhost:3000,example.com"))
+        }
+
+        val config = SnapshotConfigLoader.load(source, env = { null })
+
+        assertEquals(listOf("localhost:3000", "example.com"), config.cors.allowedHosts)
+    }
+
+    @Test
     fun `error image settings are configurable`() {
         val defaults = SnapshotConfigLoader.load(MapApplicationConfig(), env = { null })
         assertEquals(true, defaults.errorImage.enabled)

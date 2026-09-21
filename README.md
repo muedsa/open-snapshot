@@ -326,8 +326,71 @@ Invalid snapshot configuration:
 几项容易踩错的约束：
 
 - `snapshot.api-key` 至少 16 位；
-- `snapshot.admin-endpoints-enabled=true` 时必须提供 `snapshot.admin-token` 或 `SNAPSHOT_ADMIN_TOKEN`；
-- 环境变量优先于配置文件：`SNAPSHOT_API_KEY`、`SNAPSHOT_ADMIN_TOKEN`。
+- `snapshot.admin-endpoints-enabled=true` 时必须提供 `snapshot.admin-token`、`SNAPSHOT_ADMIN_TOKEN`，或一个 `admin: true` 的 API Key；
+- 环境变量优先于配置文件：`SNAPSHOT_API_KEY`、`SNAPSHOT_API_KEYS`、`SNAPSHOT_ADMIN_TOKEN`、`SNAPSHOT_METRICS_ACCESS`；
+- **列表配置**（CORS 域名、字体族、访问日志跳过路径）在 YAML 中写成列表，在环境变量 / `-P:` 覆盖中用**英文逗号**分隔，例如
+  `SNAPSHOT_CORS_ALLOWED_HOSTS="localhost:3000,127.0.0.1:3000"`。
+
+### 完整配置对照表
+
+下表列出 `application.yaml` 中的全部配置项、默认值，以及对应的容器环境变量（`docker/entrypoint.sh` 会转成 Ktor `-P:` 覆盖参数）。
+
+| 配置项 | 默认值 | 环境变量 |
+|---|---|---|
+| `ktor.deployment.host` | `0.0.0.0` | `SNAPSHOT_SERVER_HOST` |
+| `ktor.deployment.port` | `8080` | `SNAPSHOT_SERVER_PORT` |
+| `ktor.deployment.shutdownGracePeriod` | `10000` | `SNAPSHOT_SHUTDOWN_GRACE_MS` |
+| `ktor.deployment.shutdownTimeout` | `15000` | `SNAPSHOT_SHUTDOWN_TIMEOUT_MS` |
+| `snapshot.trust-proxy-headers` | `false` | `SNAPSHOT_TRUST_PROXY_HEADERS` |
+| `snapshot.max-request-size` | `1048576` | `SNAPSHOT_MAX_REQUEST_SIZE` |
+| `snapshot.max-concurrent-renders` | `4` | `SNAPSHOT_MAX_CONCURRENT_RENDERS` |
+| `snapshot.max-render-timeout-ms` | `30000` | `SNAPSHOT_MAX_RENDER_TIMEOUT_MS` |
+| `snapshot.max-render-queue` | `32` | `SNAPSHOT_MAX_RENDER_QUEUE` |
+| `snapshot.render-queue-timeout-ms` | `5000` | `SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS` |
+| `snapshot.render-cache.enabled` | `true` | `SNAPSHOT_RENDER_CACHE_ENABLED` |
+| `snapshot.render-cache.max-entries` | `256` | `SNAPSHOT_RENDER_CACHE_MAX_ENTRIES` |
+| `snapshot.render-cache.max-bytes` | `67108864` | `SNAPSHOT_RENDER_CACHE_MAX_BYTES` |
+| `snapshot.render-cache.ttl-ms` | `60000` | `SNAPSHOT_RENDER_CACHE_TTL_MS` |
+| `snapshot.error-image.enabled` | `true` | `SNAPSHOT_ERROR_IMAGE_ENABLED` |
+| `snapshot.error-image.max-lines` | `8` | `SNAPSHOT_ERROR_IMAGE_MAX_LINES` |
+| `snapshot.error-image.max-columns` | `80` | `SNAPSHOT_ERROR_IMAGE_MAX_COLUMNS` |
+| `snapshot.error-image.context-lines` | `2` | `SNAPSHOT_ERROR_IMAGE_CONTEXT_LINES` |
+| `snapshot.timing-headers.enabled` | `true` | `SNAPSHOT_TIMING_HEADERS_ENABLED` |
+| `snapshot.api-key` | 空（开放调用） | `SNAPSHOT_API_KEY` |
+| `snapshot.api-keys`（列表） | 空 | `SNAPSHOT_API_KEYS`（`名称:密钥[:admin]`） |
+| `snapshot.admin-endpoints-enabled` | `false` | `SNAPSHOT_ADMIN_ENDPOINTS_ENABLED` |
+| `snapshot.admin-token` | 空 | `SNAPSHOT_ADMIN_TOKEN` |
+| `snapshot.metrics-enabled` | `true` | `SNAPSHOT_METRICS_ENABLED` |
+| `snapshot.metrics-access` | `open` | `SNAPSHOT_METRICS_ACCESS` |
+| `snapshot.access-log-enabled` | `true` | `SNAPSHOT_ACCESS_LOG_ENABLED` |
+| `snapshot.access-log-skip-paths`（列表） | `/health`、`/ready`、`/metrics` | `SNAPSHOT_ACCESS_LOG_SKIP_PATHS` |
+| `snapshot.cors.allowed-hosts`（列表） | `localhost:3000`、`127.0.0.1:3000` | `SNAPSHOT_CORS_ALLOWED_HOSTS` |
+| `snapshot.font-family-names`（列表） | `Inter`、`Noto Serif SC`、`DejaVu Serif`、`Noto Color Emoji` | `SNAPSHOT_FONT_FAMILY_NAMES` |
+| `snapshot.rate-limit.requests` | `6` | `SNAPSHOT_RATE_LIMIT_REQUESTS` |
+| `snapshot.rate-limit.window-ms` | `60000` | `SNAPSHOT_RATE_LIMIT_WINDOW_MS` |
+| `snapshot.rate-limit.credential-requests` | `60` | `SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS` |
+| `snapshot.rate-limit.credential-window-ms` | `60000` | `SNAPSHOT_RATE_LIMIT_CREDENTIAL_WINDOW_MS` |
+| `snapshot.rate-limit.admin-requests` | `6` | `SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS` |
+| `snapshot.rate-limit.admin-window-ms` | `60000` | `SNAPSHOT_RATE_LIMIT_ADMIN_WINDOW_MS` |
+| `snapshot.max-canvas-width` | `4096` | `SNAPSHOT_MAX_CANVAS_WIDTH` |
+| `snapshot.max-canvas-height` | `4096` | `SNAPSHOT_MAX_CANVAS_HEIGHT` |
+| `snapshot.max-canvas-pixels` | `16777216` | `SNAPSHOT_MAX_CANVAS_PIXELS` |
+| `snapshot.image.max-image-num-once` | `10` | `SNAPSHOT_MAX_IMAGE_NUM` |
+| `snapshot.image.max-single-image-size` | `5242880` | `SNAPSHOT_MAX_SINGLE_IMAGE_SIZE` |
+| `snapshot.image.memory-cache-num-limit` | `100` | `SNAPSHOT_MEMORY_CACHE_NUM_LIMIT` |
+| `snapshot.image.max-cache-bytes` | `268435456` | `SNAPSHOT_MAX_CACHE_BYTES` |
+| `snapshot.image.max-image-width` | `4096` | `SNAPSHOT_MAX_IMAGE_WIDTH` |
+| `snapshot.image.max-image-height` | `4096` | `SNAPSHOT_MAX_IMAGE_HEIGHT` |
+| `snapshot.image.max-image-pixels` | `16777216` | `SNAPSHOT_MAX_IMAGE_PIXELS` |
+| `snapshot.image.allow-private-hosts` | `false` | `SNAPSHOT_ALLOW_PRIVATE_HOSTS` |
+| `snapshot.image.connect-timeout-ms` | `10000` | `SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS` |
+| `snapshot.image.read-timeout-ms` | `10000` | `SNAPSHOT_IMAGE_READ_TIMEOUT_MS` |
+| `snapshot.image.cache-ttl-ms` | `600000` | `SNAPSHOT_IMAGE_CACHE_TTL_MS` |
+| `snapshot.image.max-retries` | `1` | `SNAPSHOT_IMAGE_MAX_RETRIES` |
+| `snapshot.image.retry-backoff-ms` | `200` | `SNAPSHOT_IMAGE_RETRY_BACKOFF_MS` |
+
+密钥类变量（`SNAPSHOT_API_KEY`、`SNAPSHOT_API_KEYS`、`SNAPSHOT_ADMIN_TOKEN`）由应用直接读取环境变量，
+不会转成 JVM 命令行参数，因此不会出现在进程列表里；其余变量由 `docker/entrypoint.sh` 转成 `-P:` 覆盖参数。
 
 发布前验证：
 

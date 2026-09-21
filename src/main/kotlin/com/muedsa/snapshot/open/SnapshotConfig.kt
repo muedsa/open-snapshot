@@ -147,6 +147,23 @@ internal object SnapshotConfigLoader {
 
         fun raw(path: String): String? = config.propertyOrNull(path)?.getString()?.trim()?.takeIf { it.isNotEmpty() }
 
+        /**
+         * 读取列表配置，兼容两种来源：
+         * - YAML 列表（`path.size` 形式）；
+         * - 环境变量 / `-P:` 覆盖，此时是单个字符串，按英文逗号分隔。
+         *
+         * 注意 `tryGetStringList` 对单值会抛异常，因此这里必须容错后再回退到单值解析。
+         */
+        fun stringList(path: String): List<String> {
+            val values = runCatching { config.tryGetStringList(path) }.getOrNull()
+            val resolved = when {
+                values.isNullOrEmpty() -> raw(path) ?: return emptyList()
+                values.size == 1 -> values.single()
+                else -> return values
+            }
+            return resolved.split(',').map(String::trim).filter(String::isNotEmpty)
+        }
+
         fun positiveInt(path: String, default: Int): Int {
             val value = raw(path) ?: return default
             val parsed = value.toIntOrNull()
@@ -278,7 +295,7 @@ internal object SnapshotConfigLoader {
                 contextLines = nonNegativeInt("snapshot.error-image.context-lines", 2),
             ),
             cors = CorsSettings(
-                allowedHosts = config.tryGetStringList("snapshot.cors.allowed-hosts").orEmpty(),
+                allowedHosts = stringList("snapshot.cors.allowed-hosts"),
                 trustProxyHeaders = boolean("snapshot.trust-proxy-headers", false),
             ),
             admin = AdminSettings(enabled = adminEnabled, token = adminToken),
@@ -287,11 +304,10 @@ internal object SnapshotConfigLoader {
             metricsAccess = metricsAccess ?: MetricsAccess.OPEN,
             accessLog = AccessLogSettings(
                 enabled = boolean("snapshot.access-log-enabled", true),
-                skipPaths = config.tryGetStringList("snapshot.access-log-skip-paths")?.toSet()
-                    ?: DEFAULT_ACCESS_LOG_SKIP_PATHS,
+                skipPaths = stringList("snapshot.access-log-skip-paths").ifEmpty { DEFAULT_ACCESS_LOG_SKIP_PATHS }.toSet(),
             ),
             metricsEnabled = boolean("snapshot.metrics-enabled", true),
-            fontFamilyNames = config.tryGetStringList("snapshot.font-family-names").orEmpty(),
+            fontFamilyNames = stringList("snapshot.font-family-names"),
         )
 
         if (problems.isNotEmpty()) {
