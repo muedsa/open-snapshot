@@ -9,13 +9,15 @@ COPY gradlew gradlew.bat build.gradle.kts settings.gradle.kts gradle.properties 
 COPY src ./src
 
 RUN chmod +x ./gradlew
+ARG DEPENDENCY_REFRESH
 RUN --mount=type=cache,target=/root/.gradle/caches \
     --mount=type=cache,target=/root/.gradle/wrapper \
     --mount=type=secret,id=gpr_user,required=true \
     --mount=type=secret,id=gpr_key,required=true \
     GPR_USER="$(cat /run/secrets/gpr_user)" \
     GPR_KEY="$(cat /run/secrets/gpr_key)" \
-    ./gradlew --no-daemon shadowJar
+    echo "Refreshing Gradle dependencies (build: ${DEPENDENCY_REFRESH})" \
+    && ./gradlew --no-daemon --refresh-dependencies shadowJar
 
 FROM eclipse-temurin:21-jre-jammy
 
