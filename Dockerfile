@@ -14,9 +14,9 @@ RUN --mount=type=cache,target=/root/.gradle/caches \
     --mount=type=cache,target=/root/.gradle/wrapper \
     --mount=type=secret,id=gpr_user,required=true \
     --mount=type=secret,id=gpr_key,required=true \
-    GPR_USER="$(cat /run/secrets/gpr_user)" \
+    export GPR_USER="$(cat /run/secrets/gpr_user)" \
     GPR_KEY="$(cat /run/secrets/gpr_key)" \
-    echo "Refreshing Gradle dependencies (build: ${DEPENDENCY_REFRESH})" \
+    && echo "Refreshing Gradle dependencies (build: ${DEPENDENCY_REFRESH})" \
     && ./gradlew --no-daemon --refresh-dependencies shadowJar
 
 FROM eclipse-temurin:21-jre-jammy
