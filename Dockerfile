@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/root/.gradle/caches \
     --mount=type=secret,id=gpr_user,required=true \
     --mount=type=secret,id=gpr_key,required=true \
     export GPR_USER="$(cat /run/secrets/gpr_user)" \
-    GPR_KEY="$(cat /run/secrets/gpr_key)" \
+           GPR_KEY="$(cat /run/secrets/gpr_key)" \
     && echo "Refreshing Gradle dependencies (build: ${DEPENDENCY_REFRESH})" \
     && ./gradlew --no-daemon --refresh-dependencies shadowJar
 

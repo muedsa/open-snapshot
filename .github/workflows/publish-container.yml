@@ -82,6 +82,8 @@ jobs:
           tags: open-snapshot:smoke
           cache-from: type=gha
           platforms: linux/amd64
+          build-args: |
+            DEPENDENCY_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           secrets: |
             gpr_user=${{ env.GPR_USER }}
             gpr_key=${{ env.GPR_KEY }}
@@ -154,6 +156,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          build-args: |
+            DEPENDENCY_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           secrets: |
             gpr_user=${{ env.GPR_USER }}
             gpr_key=${{ env.GPR_KEY }}
