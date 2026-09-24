@@ -22,6 +22,9 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  # 文档结构硬限制：在递归构建 Widget 前检查，防止超深/超大元素树耗尽栈或 CPU。
+  max-document-elements: 4096
+  max-document-depth: 128
   # 渲染队列背压：等待槽位的请求上限与排队超时，超出时快速失败而不是无界堆积。
   max-render-queue: 32
   render-queue-timeout-ms: 5000
@@ -90,6 +93,8 @@ snapshot:
     max-image-width: 4096
     max-image-height: 4096
     max-image-pixels: 16777216
+    # 单次渲染内 URL 与 Data URI 图片解码后的总像素上限（约束本地内存放大）。
+    max-total-image-pixels: 16777216
     allow-private-hosts: false
     connect-timeout-ms: 10000
     read-timeout-ms: 10000

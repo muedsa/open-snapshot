@@ -1,6 +1,7 @@
 package com.muedsa.snapshot.open
 
 import com.muedsa.snapshot.parser.SnapshotElement
+import com.muedsa.snapshot.parser.image.DataUriImageDecoder
 import com.muedsa.snapshot.tools.LimitedImageInputStream
 import com.muedsa.snapshot.tools.NetworkImageCache
 import io.ktor.server.application.Application
@@ -8,7 +9,9 @@ import org.jetbrains.skia.Image
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URI
+import java.util.Base64
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
@@ -20,6 +23,151 @@ internal class ImageLoadException(
     /** 瞬时故障（5xx、超时、IO）可以重试；4xx 等确定性失败不重试。 */
     val transient: Boolean = false,
 ) : RuntimeException(message, cause)
+
+/**
+ * 单次渲染共享的图片资源预算。
+ *
+ * URL 图片（包括缓存命中）与 Data URI 图片都必须占用同一份数量和解码像素预算，
+ * 避免混合两种来源绕过限制，也避免高压缩比图片把本地内存放大到不可控规模。
+ */
+internal class ImageResourceBudget(
+    private val maxImageCount: Int,
+    private val maxTotalPixels: Long,
+) {
+    private var imageCount = 0
+    private var totalPixels = 0L
+
+    @Synchronized
+    fun claimImageSource() {
+        if (imageCount >= maxImageCount) {
+            throw ImageLoadException("Exceeded maximum number [$maxImageCount] of images per render")
+        }
+        imageCount++
+    }
+
+    @Synchronized
+    fun claimDecodedImage(image: Image) {
+        val pixels = image.width.toLong() * image.height.toLong()
+        if (pixels > maxTotalPixels - totalPixels) {
+            throw ImageLoadException("Total decoded image pixels exceed maximum $maxTotalPixels per render")
+        }
+        totalPixels += pixels
+    }
+}
+
+/**
+ * 面向开放服务的 Data URI 解码器：限制格式、编码字节、尺寸、单图像素和每次渲染总预算。
+ */
+internal class LimitedDataUriImageDecoder(
+    private val maxEncodedBytes: Int,
+    private val maxImageWidth: Int,
+    private val maxImageHeight: Int,
+    private val maxImagePixels: Long,
+    internal val budget: ImageResourceBudget,
+) : DataUriImageDecoder, AutoCloseable {
+    private val decodedImages = mutableListOf<Image>()
+
+    override fun decode(dataUri: String): Image {
+        budget.claimImageSource()
+
+        val separator = dataUri.indexOf(',')
+        val mediaType = if (separator > 0) dataUri.substring(0, separator).lowercase(Locale.ROOT) else ""
+        val format = SUPPORTED_HEADERS[mediaType]
+            ?: throw ImageLoadException("Expected a PNG, JPEG or WebP Base64 image Data URI")
+        val encoded = dataUri.substring(separator + 1)
+        if (encoded.isEmpty()) {
+            throw ImageLoadException("Image Data URI has no Base64 payload")
+        }
+
+        // Base64 最多把 3 字节展开为 4 字符；先限制字符串长度，避免 decode() 预分配过大数组。
+        val maxEncodedLength = ((maxEncodedBytes.toLong() + 2L) / 3L) * 4L
+        if (encoded.length.toLong() > maxEncodedLength) {
+            throw ImageLoadException("Data URI image exceeds maximum $maxEncodedBytes encoded bytes")
+        }
+        val bytes = try {
+            Base64.getDecoder().decode(encoded)
+        } catch (error: IllegalArgumentException) {
+            throw ImageLoadException("Image Data URI contains invalid Base64 data", error)
+        }
+        if (bytes.size > maxEncodedBytes) {
+            throw ImageLoadException("Data URI image exceeds maximum $maxEncodedBytes encoded bytes")
+        }
+        if (!format.matches(bytes)) {
+            throw ImageLoadException("Image Data URI media type does not match its encoded image format")
+        }
+
+        val image = try {
+            Image.makeFromEncoded(bytes)
+        } catch (error: Exception) {
+            throw ImageLoadException("Data URI contains an invalid or unsupported image", error)
+        }
+        try {
+            validateDecodedImage(image, maxImageWidth, maxImageHeight, maxImagePixels)
+            budget.claimDecodedImage(image)
+            decodedImages += image
+            return image
+        } catch (error: Throwable) {
+            image.close()
+            throw error
+        }
+    }
+
+    /** Data URI 图片不进入全局缓存，渲染结束后立即释放对应的 Skia 本地内存。 */
+    override fun close() {
+        decodedImages.forEach { image ->
+            if (!image.isClosed) image.close()
+        }
+        decodedImages.clear()
+    }
+
+    private enum class ImageFormat {
+        PNG {
+            override fun matches(bytes: ByteArray): Boolean =
+                bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE)
+        },
+        JPEG {
+            override fun matches(bytes: ByteArray): Boolean =
+                bytes.size >= 3 && bytes[0] == 0xff.toByte() && bytes[1] == 0xd8.toByte() && bytes[2] == 0xff.toByte()
+        },
+        WEBP {
+            override fun matches(bytes: ByteArray): Boolean =
+                bytes.size >= 12 &&
+                    bytes.copyOfRange(0, 4).contentEquals(RIFF_SIGNATURE) &&
+                    bytes.copyOfRange(8, 12).contentEquals(WEBP_SIGNATURE)
+        },
+        ;
+
+        abstract fun matches(bytes: ByteArray): Boolean
+    }
+
+    private companion object {
+        val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+        val RIFF_SIGNATURE = "RIFF".encodeToByteArray()
+        val WEBP_SIGNATURE = "WEBP".encodeToByteArray()
+        val SUPPORTED_HEADERS = mapOf(
+            "data:image/png;base64" to ImageFormat.PNG,
+            "data:image/jpeg;base64" to ImageFormat.JPEG,
+            "data:image/webp;base64" to ImageFormat.WEBP,
+        )
+    }
+}
+
+private fun validateDecodedImage(
+    image: Image,
+    maxImageWidth: Int,
+    maxImageHeight: Int,
+    maxImagePixels: Long,
+) {
+    if (image.width > maxImageWidth || image.height > maxImageHeight) {
+        throw ImageLoadException(
+            "Image dimensions ${image.width}x${image.height} exceed maximum ${maxImageWidth}x$maxImageHeight"
+        )
+    }
+    val pixels = image.width.toLong() * image.height.toLong()
+    if (pixels > maxImagePixels) {
+        throw ImageLoadException("Image pixel count $pixels exceeds maximum $maxImagePixels")
+    }
+}
 
 /** 条件请求的两种结果，用于指标标签。 */
 internal const val REVALIDATION_NOT_MODIFIED = "not_modified"
@@ -170,6 +318,7 @@ internal class LimitedNetworkImageCache(
     private val maxImageWidth: Int,
     private val maxImageHeight: Int,
     private val maxImagePixels: Long,
+    private val imageBudget: ImageResourceBudget = ImageResourceBudget(maxImageNum, maxImagePixels),
     private val allowPrivateHosts: Boolean,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 10_000,
@@ -177,14 +326,16 @@ internal class LimitedNetworkImageCache(
     private val retryBackoffMs: Long = 0,
 ) : NetworkImageCache {
     override val name: String = "OpenSnapshotLimitedNetworkImageCache"
-    private var requestCount = 0
 
     @Synchronized
     override fun getImage(url: String, noCache: Boolean): Image {
+        // 缓存命中同样代表文档中的一个图片节点，必须计入数量和总解码像素预算。
+        imageBudget.claimImageSource()
         val stale = if (!noCache) {
             val fresh = memoryCache.get(url)
             if (fresh != null) {
                 Metrics.imageCacheHits.inc()
+                imageBudget.claimDecodedImage(fresh.image)
                 return fresh.image
             }
             Metrics.imageCacheMisses.inc()
@@ -194,17 +345,13 @@ internal class LimitedNetworkImageCache(
             null
         }
 
-        check(requestCount < maxImageNum) {
-            "Exceeded maximum number [$maxImageNum] of image http requests"
-        }
-        requestCount++
-
         // 记录本请求在图片获取上的墙钟时间：包含等待同一 URL 的并发下载结果。
         val fetchStartedAt = System.nanoTime()
         var downloaded = false
         try {
             val loaded = SharedImageLoader.load(url) { loadImage(url, stale) }
             downloaded = !loaded.reused
+            imageBudget.claimDecodedImage(loaded.image)
             if (!noCache) {
                 if (loaded.reused) {
                     // 304：刷新过期时间；条目若已被淘汰则重新写回。
@@ -238,18 +385,16 @@ internal class LimitedNetworkImageCache(
         }
 
         val downloaded = download as DownloadResult.Downloaded
-        val image = Image.makeFromEncoded(downloaded.bytes)
-        if (image.width > maxImageWidth || image.height > maxImageHeight) {
-            image.close()
-            throw ImageLoadException(
-                "Image dimensions ${image.width}x${image.height} exceed maximum ${maxImageWidth}x$maxImageHeight"
-            )
+        val image = try {
+            Image.makeFromEncoded(downloaded.bytes)
+        } catch (error: Exception) {
+            throw ImageLoadException("Downloaded data is not a valid supported image", error)
         }
-        if (image.width.toLong() * image.height.toLong() > maxImagePixels) {
+        try {
+            validateDecodedImage(image, maxImageWidth, maxImageHeight, maxImagePixels)
+        } catch (error: Throwable) {
             image.close()
-            throw ImageLoadException(
-                "Image pixel count ${image.width.toLong() * image.height.toLong()} exceeds maximum $maxImagePixels"
-            )
+            throw error
         }
         if (stale != null) {
             Metrics.imageRevalidated(REVALIDATION_UPDATED)
@@ -447,6 +592,8 @@ fun Application.configureImageCache(allowPrivateHostsOverride: Boolean? = null) 
             maxImageWidth = limits.maxImageWidth,
             maxImageHeight = limits.maxImageHeight,
             maxImagePixels = limits.maxImagePixels,
+            imageBudget = (it.dataUriImageDecoder as? LimitedDataUriImageDecoder)?.budget
+                ?: ImageResourceBudget(limits.maxImageNumOnce, limits.maxTotalImagePixels),
             allowPrivateHosts = allowPrivateHosts,
             connectTimeoutMs = limits.connectTimeoutMs,
             readTimeoutMs = limits.readTimeoutMs,

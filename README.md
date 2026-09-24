@@ -53,6 +53,17 @@ curl -X POST http://localhost:8080/snapshot `
 `fit` 可选 `FILL`、`CONTAIN`、`COVER`、`FIT_WIDTH`、`FIT_HEIGHT`、`NONE`、`SCALE_DOWN`。
 `noCache="true"` 会跳过缓存，默认 `false`（布尔属性必须写出值，裸写属性会回落到默认值）。
 
+内嵌图片可使用 `dataUri`（PNG、JPEG、WebP），不能与 `url` 同时出现：
+
+```html
+<Snapshot type="png">
+    <Image width="32" height="32" dataUri="data:image/png;base64,iVBORw0KGgo..."/>
+</Snapshot>
+```
+
+URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Data URI 还会在解码前检查 Base64
+长度，并校验声明 MIME 与实际文件签名，防止压缩图片或伪造格式造成内存放大。
+
 指定字体族，避免中文或 Emoji 缺字（多个字体用英文逗号分隔，且**不能带空格**）：
 
 ```html
@@ -255,6 +266,8 @@ snapshot:
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
+  max-document-elements: 4096
+  max-document-depth: 128
   # 渲染队列背压：0 表示不排队、直接拒绝
   max-render-queue: 32
   render-queue-timeout-ms: 5000
@@ -304,6 +317,7 @@ snapshot:
     max-image-width: 4096
     max-image-height: 4096
     max-image-pixels: 16777216
+    max-total-image-pixels: 16777216
     allow-private-hosts: false
     connect-timeout-ms: 10000
     read-timeout-ms: 10000
@@ -345,6 +359,8 @@ Invalid snapshot configuration:
 | `snapshot.max-request-size` | `1048576` | `SNAPSHOT_MAX_REQUEST_SIZE` |
 | `snapshot.max-concurrent-renders` | `4` | `SNAPSHOT_MAX_CONCURRENT_RENDERS` |
 | `snapshot.max-render-timeout-ms` | `30000` | `SNAPSHOT_MAX_RENDER_TIMEOUT_MS` |
+| `snapshot.max-document-elements` | `4096` | `SNAPSHOT_MAX_DOCUMENT_ELEMENTS` |
+| `snapshot.max-document-depth` | `128` | `SNAPSHOT_MAX_DOCUMENT_DEPTH` |
 | `snapshot.max-render-queue` | `32` | `SNAPSHOT_MAX_RENDER_QUEUE` |
 | `snapshot.render-queue-timeout-ms` | `5000` | `SNAPSHOT_RENDER_QUEUE_TIMEOUT_MS` |
 | `snapshot.render-cache.enabled` | `true` | `SNAPSHOT_RENDER_CACHE_ENABLED` |
@@ -382,6 +398,7 @@ Invalid snapshot configuration:
 | `snapshot.image.max-image-width` | `4096` | `SNAPSHOT_MAX_IMAGE_WIDTH` |
 | `snapshot.image.max-image-height` | `4096` | `SNAPSHOT_MAX_IMAGE_HEIGHT` |
 | `snapshot.image.max-image-pixels` | `16777216` | `SNAPSHOT_MAX_IMAGE_PIXELS` |
+| `snapshot.image.max-total-image-pixels` | `16777216` | `SNAPSHOT_MAX_TOTAL_IMAGE_PIXELS` |
 | `snapshot.image.allow-private-hosts` | `false` | `SNAPSHOT_ALLOW_PRIVATE_HOSTS` |
 | `snapshot.image.connect-timeout-ms` | `10000` | `SNAPSHOT_IMAGE_CONNECT_TIMEOUT_MS` |
 | `snapshot.image.read-timeout-ms` | `10000` | `SNAPSHOT_IMAGE_READ_TIMEOUT_MS` |
@@ -476,13 +493,18 @@ scrape_configs:
       - targets: ["snapshot:8080"]
 ```
 
-### 网络图片缓存
+### 图片安全与网络图片缓存
+
+- URL 与 Data URI 图片共用 `max-image-num-once` 和 `max-total-image-pixels`，缓存命中也计入预算；
+- 两种来源都受单图编码大小、解码宽高和像素数限制；
+- Data URI 仅接受 PNG、JPEG、WebP 的严格 Base64，并校验声明格式与文件签名；
+- URL 图片额外限制为 HTTP(S)，默认阻止本机、私网、链路本地、保留网段及云元数据地址。
 
 - 全局 LRU 缓存同时受 `memory-cache-num-limit`（数量）与 `max-cache-bytes`（总字节）约束；
 - 淘汰与清空只丢弃引用，不会关闭可能正被其他并发渲染绘制的图片：
   Skiko 的 `Managed` 在对象不可达后由 Reference Cleaner 回收本地内存；
 - 同一 URL 的并发请求只下载与解码一次，其余调用共享同一结果；
-- 每张图片仍受单图大小、解码宽高、像素数与私网地址限制，单次渲染请求数受 `max-image-num-once` 限制。
+- 文档树还受 `max-document-elements` 与 `max-document-depth` 限制，防止递归构建 Widget 时栈溢出或长时间占用渲染槽位。
 
 `cache-ttl-ms` 控制缓存新鲜度（默认 10 分钟，`0` 表示永不过期）：
 

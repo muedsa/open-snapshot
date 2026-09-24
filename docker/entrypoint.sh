@@ -18,6 +18,12 @@ fi
 if [ -n "${SNAPSHOT_MAX_RENDER_TIMEOUT_MS:-}" ]; then
     set -- "$@" "-P:snapshot.max-render-timeout-ms=${SNAPSHOT_MAX_RENDER_TIMEOUT_MS}"
 fi
+if [ -n "${SNAPSHOT_MAX_DOCUMENT_ELEMENTS:-}" ]; then
+    set -- "$@" "-P:snapshot.max-document-elements=${SNAPSHOT_MAX_DOCUMENT_ELEMENTS}"
+fi
+if [ -n "${SNAPSHOT_MAX_DOCUMENT_DEPTH:-}" ]; then
+    set -- "$@" "-P:snapshot.max-document-depth=${SNAPSHOT_MAX_DOCUMENT_DEPTH}"
+fi
 if [ -n "${SNAPSHOT_MAX_RENDER_QUEUE:-}" ]; then
     set -- "$@" "-P:snapshot.max-render-queue=${SNAPSHOT_MAX_RENDER_QUEUE}"
 fi
@@ -128,6 +134,9 @@ if [ -n "${SNAPSHOT_MAX_IMAGE_HEIGHT:-}" ]; then
 fi
 if [ -n "${SNAPSHOT_MAX_IMAGE_PIXELS:-}" ]; then
     set -- "$@" "-P:snapshot.image.max-image-pixels=${SNAPSHOT_MAX_IMAGE_PIXELS}"
+fi
+if [ -n "${SNAPSHOT_MAX_TOTAL_IMAGE_PIXELS:-}" ]; then
+    set -- "$@" "-P:snapshot.image.max-total-image-pixels=${SNAPSHOT_MAX_TOTAL_IMAGE_PIXELS}"
 fi
 if [ -n "${SNAPSHOT_ALLOW_PRIVATE_HOSTS:-}" ]; then
     set -- "$@" "-P:snapshot.image.allow-private-hosts=${SNAPSHOT_ALLOW_PRIVATE_HOSTS}"

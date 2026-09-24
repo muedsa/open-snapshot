@@ -55,7 +55,10 @@ paths:
           example: png
       requestBody:
         required: true
-        description: snapshot DSL 文本，根标签为 `<Snapshot>`。
+        description: |
+          snapshot DSL 文本，根标签为 `<Snapshot>`。`<Image>` 与 `<Emoji>` 可使用 HTTP(S) `url`
+          或 PNG/JPEG/WebP Base64 `dataUri`（二选一）；两种来源共用图片数量、单图尺寸和
+          单次渲染总解码像素限制。文档元素数量与嵌套深度也受服务端配置限制。
         content:
           text/plain:
             schema:
@@ -405,7 +408,8 @@ components:
       description: |
         请求不合法，`code` 取值：
         `EMPTY_REQUEST`（空请求体）、`PARSE_ERROR`（DSL 语法错误，message 含位置与附近源码）、
-        `RENDER_ERROR`（超出画布限制或布局失败）、`IMAGE_LOAD_ERROR`（图片地址非法或加载失败）。
+        `RENDER_ERROR`（超出画布/文档结构限制或布局失败）、`IMAGE_LOAD_ERROR`
+        （图片地址非法、加载失败、Data URI 格式非法或超出图片预算）。
 
         带 `?errorImage=png` 且 `code` 为 `PARSE_ERROR` 时，响应体为解析错误高亮图（`image/png`），
         并返回 `X-Snapshot-Error-Code`、`X-Snapshot-Error-Position`、`X-Snapshot-Error-Location` 响应头；
