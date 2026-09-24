@@ -114,6 +114,9 @@ fi
 if [ -n "${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.admin-endpoints-enabled=${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED}"
 fi
+if [ -n "${SNAPSHOT_ANONYMOUS_ACCESS_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.anonymous-access-enabled=${SNAPSHOT_ANONYMOUS_ACCESS_ENABLED}"
+fi
 if [ -n "${SNAPSHOT_MAX_IMAGE_NUM:-}" ]; then
     set -- "$@" "-P:snapshot.image.max-image-num-once=${SNAPSHOT_MAX_IMAGE_NUM}"
 fi

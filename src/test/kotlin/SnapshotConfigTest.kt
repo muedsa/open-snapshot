@@ -43,6 +43,7 @@ class SnapshotConfigTest {
         assertNull(config.admin.token)
         assertNull(config.apiKey)
         assertEquals(emptyList(), config.credentials)
+        assertEquals(false, config.anonymousAccessEnabled)
         assertEquals(MetricsAccess.OPEN, config.metricsAccess)
         assertEquals(true, config.accessLog.enabled)
         assertEquals(setOf("/health", "/ready", "/metrics"), config.accessLog.skipPaths)
@@ -58,6 +59,7 @@ class SnapshotConfigTest {
             put("snapshot.max-document-elements", "2000")
             put("snapshot.max-document-depth", "64")
             put("snapshot.image.max-total-image-pixels", "8000000")
+            put("snapshot.anonymous-access-enabled", "true")
             put("snapshot.image.connect-timeout-ms", "1500")
             put("snapshot.image.read-timeout-ms", "2500")
             put("snapshot.image.allow-private-hosts", "true")
@@ -75,6 +77,7 @@ class SnapshotConfigTest {
         assertEquals(2000, config.maxDocumentElements)
         assertEquals(64, config.maxDocumentDepth)
         assertEquals(8_000_000L, config.image.maxTotalImagePixels)
+        assertEquals(true, config.anonymousAccessEnabled)
         assertEquals(1500, config.image.connectTimeoutMs)
         assertEquals(2500, config.image.readTimeoutMs)
         assertTrue(config.image.allowPrivateHosts)
@@ -93,6 +96,7 @@ class SnapshotConfigTest {
                     "snapshot.max-request-size" to "-1",
                     "snapshot.metrics-enabled" to "maybe",
                     "snapshot.image.max-image-pixels" to "abc",
+                    "snapshot.anonymous-access-enabled" to "sometimes",
                 ),
                 env = { null },
             )
@@ -102,6 +106,7 @@ class SnapshotConfigTest {
         assertTrue(message.contains("snapshot.max-request-size"), message)
         assertTrue(message.contains("snapshot.metrics-enabled"), message)
         assertTrue(message.contains("snapshot.image.max-image-pixels"), message)
+        assertTrue(message.contains("snapshot.anonymous-access-enabled"), message)
     }
 
     @Test

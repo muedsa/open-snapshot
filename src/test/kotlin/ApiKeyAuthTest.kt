@@ -72,6 +72,36 @@ class ApiKeyAuthTest {
     }
 
     @Test
+    fun `anonymous access can be enabled without accepting invalid credentials`() = testApplication {
+        configure(
+            overrides = {
+                put("snapshot.api-key", TEST_API_KEY)
+                put("snapshot.anonymous-access-enabled", "true")
+            }
+        )
+
+        val anonymous = client.post("/snapshot") {
+            header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+            setBody(pngSource)
+        }
+        assertEquals(HttpStatusCode.OK, anonymous.status)
+
+        val invalid = client.post("/snapshot") {
+            header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+            header("X-API-Key", "wrong-api-key-0000000000")
+            setBody(pngSource)
+        }
+        assertEquals(HttpStatusCode.Unauthorized, invalid.status)
+
+        val authenticated = client.post("/snapshot") {
+            header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
+            header("X-API-Key", TEST_API_KEY)
+            setBody(pngSource)
+        }
+        assertEquals(HttpStatusCode.OK, authenticated.status)
+    }
+
+    @Test
     fun `probe and metrics endpoints stay open with api key configured`() = testApplication {
         configure(overrides = { put("snapshot.api-key", TEST_API_KEY) })
 

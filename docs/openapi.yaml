@@ -11,7 +11,8 @@ info:
     - 限流分层：匿名调用方按来源 IP，已认证调用方按凭据，管理接口单独计桶；
       超限返回 `429` 并带 `Retry-After`，同时返回 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`。
     - 配置 `snapshot.api-key`、`SNAPSHOT_API_KEY`、`SNAPSHOT_API_KEYS` 或 `snapshot.api-keys` 后，
-      `/snapshot` 需要携带 API Key；支持多个 Key 同时在列以便平滑轮换。
+      `/snapshot` 默认需要携带 API Key；设置 `snapshot.anonymous-access-enabled=true` 后仍允许匿名访问，
+      匿名请求按来源 IP 限流，有效 API Key 使用独立的凭据配额。
     - `/metrics` 可通过 `snapshot.metrics-access` 设置为 `open`（默认）、`credential` 或 `admin`；
       `/health`、`/ready` 始终开放。
   version: 1.0.0
@@ -360,7 +361,8 @@ components:
       description: |
         仅当配置了客户端凭据时校验：`snapshot.api-key`、`SNAPSHOT_API_KEY`、
         `SNAPSHOT_API_KEYS`（`名称:密钥` 逗号分隔）或 `snapshot.api-keys` 列表。
-        多个 Key 可同时在列，便于平滑轮换。
+        多个 Key 可同时在列，便于平滑轮换。`snapshot.anonymous-access-enabled=true` 时可以不携带凭据，
+        但显式携带错误凭据仍返回 `401`。
     BearerApiKey:
       type: http
       scheme: bearer

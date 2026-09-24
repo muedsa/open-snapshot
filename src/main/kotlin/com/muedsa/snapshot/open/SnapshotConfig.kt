@@ -122,9 +122,11 @@ internal class SnapshotConfig(
     val timingHeaders: TimingSettings,
     val cors: CorsSettings,
     val admin: AdminSettings,
-    /** 匿名调用方是否开放；由是否配置客户端凭据决定。 */
+    /** 兼容单 Key 配置；实际鉴权统一使用 [credentials]。 */
     val apiKey: String?,
     val credentials: List<ApiCredential>,
+    /** 配置客户端凭据后，是否仍允许未携带凭据的请求按匿名身份访问 `/snapshot`。 */
+    val anonymousAccessEnabled: Boolean,
     val metricsAccess: MetricsAccess,
     val accessLog: AccessLogSettings,
     val metricsEnabled: Boolean,
@@ -308,6 +310,7 @@ internal object SnapshotConfigLoader {
             admin = AdminSettings(enabled = adminEnabled, token = adminToken),
             apiKey = apiKey,
             credentials = credentials,
+            anonymousAccessEnabled = boolean("snapshot.anonymous-access-enabled", false),
             metricsAccess = metricsAccess ?: MetricsAccess.OPEN,
             accessLog = AccessLogSettings(
                 enabled = boolean("snapshot.access-log-enabled", true),

@@ -47,6 +47,8 @@ snapshot:
   # 需要多个 Key 时改用下面的 api-keys 列表或 SNAPSHOT_API_KEYS 环境变量。
   # 建议通过环境变量注入，避免出现在进程命令行里。
   api-key: ""
+  # 配置 API Key 后是否仍允许匿名调用 /snapshot；匿名调用继续按来源 IP 限流。
+  anonymous-access-enabled: false
   # 多 Key 示例（name 用于日志、指标与限流分桶；admin=true 可访问管理接口）：
   # api-keys:
   #   - name: web-frontend

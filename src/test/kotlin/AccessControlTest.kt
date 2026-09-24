@@ -159,6 +159,30 @@ class AccessControlTest {
     }
 
     @Test
+    fun `anonymous access with configured keys keeps ip quota separate from credential quota`() = testApplication {
+        configure(
+            overrides = {
+                put("snapshot.api-key", WEB_KEY)
+                put("snapshot.anonymous-access-enabled", "true")
+                put("snapshot.rate-limit.requests", "2")
+                put("snapshot.rate-limit.window-ms", "60000")
+                put("snapshot.rate-limit.credential-requests", "1")
+                put("snapshot.rate-limit.credential-window-ms", "60000")
+            },
+        )
+
+        val anonymous = render(apiKey = null)
+        assertEquals(HttpStatusCode.OK, anonymous.status)
+        assertEquals("2", anonymous.headers["X-RateLimit-Limit"])
+        assertEquals(HttpStatusCode.OK, render(apiKey = null).status)
+
+        // 匿名 IP 桶已消耗两次后，有效凭据仍使用额度不同的独立凭据桶。
+        val authenticated = render(apiKey = WEB_KEY)
+        assertEquals(HttpStatusCode.OK, authenticated.status)
+        assertEquals("1", authenticated.headers["X-RateLimit-Limit"])
+    }
+
+    @Test
     fun `metrics can require an api key`() = testApplication {
         configure(
             overrides = {

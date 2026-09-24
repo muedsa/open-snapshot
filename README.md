@@ -201,7 +201,7 @@ snapshot:
 
 **轮换方式**：把新 Key 与旧 Key 同时列在配置里，等调用方切换完成后删除旧 Key，全程无需停机。
 
-启用后 `/snapshot` 必须携带以下任一种凭据，否则返回 `401 UNAUTHORIZED`：
+启用后 `/snapshot` 默认必须携带以下任一种凭据，否则返回 `401 UNAUTHORIZED`：
 
 ```bash
 curl -X POST http://localhost:8080/snapshot `
@@ -220,6 +220,15 @@ curl -X POST http://localhost:8080/snapshot `
 ```
 
 凭据按 SHA-256 摘要查找（不逐字符比较密钥），管理令牌使用定长比较。建议通过环境变量注入，而不是写入配置文件或命令行参数。
+
+如果希望保留 API Key 的高配额通道，同时继续开放匿名访问，可显式开启：
+
+```dotenv
+SNAPSHOT_ANONYMOUS_ACCESS_ENABLED=true
+```
+
+匿名请求仍按来源 IP 使用 `rate-limit.requests` 配额；有效 API Key 使用独立的凭据配额。
+显式携带错误 API Key 的请求仍返回 `401`，不会无声降级为匿名访问。该开关默认 `false`。
 
 管理接口接受带 `admin: true` 的 API Key 或管理令牌；凭据有效但非管理员返回 `403 FORBIDDEN`，未认证返回 `401 UNAUTHORIZED`：
 
@@ -288,6 +297,8 @@ snapshot:
     enabled: true
   # 留空表示开放调用；填写后 /snapshot 需要 API Key，多 Key 见 api-keys 列表。
   api-key: ""
+  # 配置 API Key 后是否仍允许匿名调用；默认关闭。
+  anonymous-access-enabled: false
   access-log-enabled: true
   access-log-skip-paths:
     - /health
@@ -374,6 +385,7 @@ Invalid snapshot configuration:
 | `snapshot.timing-headers.enabled` | `true` | `SNAPSHOT_TIMING_HEADERS_ENABLED` |
 | `snapshot.api-key` | 空（开放调用） | `SNAPSHOT_API_KEY` |
 | `snapshot.api-keys`（列表） | 空 | `SNAPSHOT_API_KEYS`（`名称:密钥[:admin]`） |
+| `snapshot.anonymous-access-enabled` | `false` | `SNAPSHOT_ANONYMOUS_ACCESS_ENABLED` |
 | `snapshot.admin-endpoints-enabled` | `false` | `SNAPSHOT_ADMIN_ENDPOINTS_ENABLED` |
 | `snapshot.admin-token` | 空 | `SNAPSHOT_ADMIN_TOKEN` |
 | `snapshot.metrics-enabled` | `true` | `SNAPSHOT_METRICS_ENABLED` |
@@ -629,6 +641,7 @@ SNAPSHOT_SHUTDOWN_GRACE_MS=10000
 SNAPSHOT_SHUTDOWN_TIMEOUT_MS=15000
 SNAPSHOT_API_KEY=replace-with-a-long-random-key
 SNAPSHOT_API_KEYS=web-frontend:key-0123456789abcdef,partner-a:key-fedcba9876543210
+SNAPSHOT_ANONYMOUS_ACCESS_ENABLED=true
 SNAPSHOT_METRICS_ACCESS=open
 SNAPSHOT_RATE_LIMIT_CREDENTIAL_REQUESTS=120
 SNAPSHOT_RATE_LIMIT_ADMIN_REQUESTS=4
