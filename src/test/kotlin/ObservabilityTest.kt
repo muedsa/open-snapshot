@@ -139,6 +139,7 @@ class ObservabilityTest {
     fun `access log line keeps values on a single line`() {
         val line = buildAccessLogLine(
             requestId = "req-1",
+            ip = "2001:db8::1\ninjected=1",
             method = "POST",
             path = "/snapshot\ninjected=1",
             status = 200,
@@ -148,6 +149,7 @@ class ObservabilityTest {
 
         assertFalse(line.contains('\n'))
         assertTrue(line.contains("requestId=req-1"))
+        assertTrue(line.contains("ip=2001:db8::1_injected=1"))
         assertTrue(line.contains("path=/snapshot_injected=1"))
         assertTrue(line.contains("status=200"))
         assertTrue(line.contains("durationMs=1"))

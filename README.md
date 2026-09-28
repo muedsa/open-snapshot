@@ -460,11 +460,12 @@ Netty 引擎至少会等待 `shutdownGracePeriod`，所以不要把它设置得�
 `snapshot.access-log-enabled: true` 时每个请求输出一行结构化日志，探针路径默认不记录：
 
 ```text
-event=snapshot.access requestId=df6577b3-... method=POST path=/snapshot status=200 durationMs=19 bytes=93
+event=snapshot.access requestId=df6577b3-... ip=203.0.113.10 method=POST path=/snapshot status=200 durationMs=19 bytes=93
 ```
 
-日志只包含请求 ID、方法、路径、状态码、耗时和响应字节数，不记录 DSL 与图片地址；
-路径中的控制字符会被替换，避免日志注入。
+日志包含请求 ID、来源 IP、方法、路径、状态码、耗时和响应字节数，不记录 DSL 与图片地址；
+IP 与匿名限流使用同一来源地址。直连时取连接地址；开启 `trust-proxy-headers` 后使用可信反代传入的地址。
+日志字段中的控制字符与空格会被替换，避免日志注入。
 
 ### 指标
 

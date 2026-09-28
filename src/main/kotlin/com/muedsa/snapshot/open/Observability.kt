@@ -100,6 +100,7 @@ internal object ReadinessProbe {
  */
 internal fun buildAccessLogLine(
     requestId: String,
+    ip: String,
     method: String,
     path: String,
     status: Int,
@@ -108,6 +109,7 @@ internal fun buildAccessLogLine(
 ): String = buildString {
     append("event=snapshot.access")
     append(" requestId=").append(sanitizeLogValue(requestId, 64))
+    append(" ip=").append(sanitizeLogValue(ip, 128))
     append(" method=").append(sanitizeLogValue(method, 16))
     append(" path=").append(sanitizeLogValue(path, 128))
     append(" status=").append(status)
@@ -202,6 +204,7 @@ fun Application.configureObservability() {
                 logger.info(
                     buildAccessLogLine(
                         requestId = call.snapshotRequestId(),
+                        ip = call.remoteHostLabel(),
                         method = call.request.httpMethod.value,
                         path = path,
                         status = status,
