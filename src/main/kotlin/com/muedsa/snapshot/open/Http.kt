@@ -3,7 +3,6 @@ package com.muedsa.snapshot.open
 import io.ktor.server.application.*
 import io.ktor.http.*
 import io.ktor.server.plugins.cors.routing.*
-import io.ktor.server.plugins.forwardedheaders.*
 
 fun Application.configureHttp() {
     val cors = snapshotConfig().cors
@@ -24,8 +23,5 @@ fun Application.configureHttp() {
         TIMING_EXPOSED_HEADERS.forEach(::exposeHeader)
         allowNonSimpleContentTypes = true
         cors.allowedHosts.forEach(::allowHost)
-    }
-    if (cors.trustProxyHeaders) {
-        install(XForwardedHeaders)
     }
 }

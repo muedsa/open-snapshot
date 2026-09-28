@@ -111,6 +111,9 @@ fi
 if [ -n "${SNAPSHOT_TRUST_PROXY_HEADERS:-}" ]; then
     set -- "$@" "-P:snapshot.trust-proxy-headers=${SNAPSHOT_TRUST_PROXY_HEADERS}"
 fi
+if [ -n "${SNAPSHOT_TRUSTED_PROXY_CIDRS:-}" ]; then
+    set -- "$@" "-P:snapshot.trusted-proxy-cidrs=${SNAPSHOT_TRUSTED_PROXY_CIDRS}"
+fi
 if [ -n "${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.admin-endpoints-enabled=${SNAPSHOT_ADMIN_ENDPOINTS_ENABLED}"
 fi

@@ -62,6 +62,7 @@ internal enum class MetricsAccess {
 internal data class CorsSettings(
     val allowedHosts: List<String>,
     val trustProxyHeaders: Boolean,
+    val trustedProxyCidrs: List<TrustedProxyCidr>,
 )
 
 internal data class AdminSettings(
@@ -246,6 +247,17 @@ internal object SnapshotConfigLoader {
             problems += "snapshot.metrics-access must be one of 'open', 'credential', 'admin', but was '$metricsAccessValue'"
         }
 
+        val trustedProxyValues = stringList("snapshot.trusted-proxy-cidrs")
+        if (trustedProxyValues.size > 64) {
+            problems += "snapshot.trusted-proxy-cidrs supports at most 64 entries"
+        }
+        val trustedProxyCidrs = trustedProxyValues.take(64).mapNotNull { value ->
+            TrustedProxyCidr.parse(value) ?: run {
+                problems += "snapshot.trusted-proxy-cidrs contains invalid IP/CIDR '$value'"
+                null
+            }
+        }
+
         val config = SnapshotConfig(
             maxRequestSize = positiveLong("snapshot.max-request-size", 1_048_576L),
             maxConcurrentRenders = positiveInt("snapshot.max-concurrent-renders", 4),
@@ -306,6 +318,7 @@ internal object SnapshotConfigLoader {
             cors = CorsSettings(
                 allowedHosts = stringList("snapshot.cors.allowed-hosts"),
                 trustProxyHeaders = boolean("snapshot.trust-proxy-headers", false),
+                trustedProxyCidrs = trustedProxyCidrs,
             ),
             admin = AdminSettings(enabled = adminEnabled, token = adminToken),
             apiKey = apiKey,

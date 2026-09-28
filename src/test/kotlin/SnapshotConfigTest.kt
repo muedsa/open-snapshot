@@ -39,6 +39,7 @@ class SnapshotConfigTest {
         assertEquals(6, config.rateLimit.adminRequests)
         assertEquals(60_000L, config.rateLimit.adminWindowMs)
         assertEquals(false, config.cors.trustProxyHeaders)
+        assertEquals(emptyList(), config.cors.trustedProxyCidrs)
         assertEquals(false, config.admin.enabled)
         assertNull(config.admin.token)
         assertNull(config.apiKey)
@@ -184,6 +185,7 @@ class SnapshotConfigTest {
                 "snapshot.cors.allowed-hosts" to "localhost:3000,127.0.0.1:3000",
                 "snapshot.font-family-names" to "Inter,Noto Serif SC",
                 "snapshot.access-log-skip-paths" to "/health,/ready",
+                "snapshot.trusted-proxy-cidrs" to "10.0.0.1/32,2001:db8::/32",
             ),
             env = { null },
         )
@@ -191,6 +193,7 @@ class SnapshotConfigTest {
         assertEquals(listOf("localhost:3000", "127.0.0.1:3000"), config.cors.allowedHosts)
         assertEquals(listOf("Inter", "Noto Serif SC"), config.fontFamilyNames)
         assertEquals(setOf("/health", "/ready"), config.accessLog.skipPaths)
+        assertEquals(2, config.cors.trustedProxyCidrs.size)
     }
 
     @Test
@@ -199,6 +202,7 @@ class SnapshotConfigTest {
             put("snapshot.cors.allowed-hosts", listOf("localhost:3000", "127.0.0.1:3000"))
             put("snapshot.font-family-names", listOf("Inter", "Noto Serif SC"))
             put("snapshot.access-log-skip-paths", listOf("/health"))
+            put("snapshot.trusted-proxy-cidrs", listOf("10.0.0.1/32", "2001:db8::/32"))
         }
 
         val config = SnapshotConfigLoader.load(source, env = { null })
@@ -206,6 +210,19 @@ class SnapshotConfigTest {
         assertEquals(listOf("localhost:3000", "127.0.0.1:3000"), config.cors.allowedHosts)
         assertEquals(listOf("Inter", "Noto Serif SC"), config.fontFamilyNames)
         assertEquals(setOf("/health"), config.accessLog.skipPaths)
+        assertEquals(2, config.cors.trustedProxyCidrs.size)
+    }
+
+    @Test
+    fun `invalid trusted proxy ranges fail startup`() {
+        val error = assertFailsWith<SnapshotConfigurationException> {
+            SnapshotConfigLoader.load(
+                MapApplicationConfig("snapshot.trusted-proxy-cidrs" to "example.com,10.0.0.0/33"),
+                env = { null },
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("example.com"))
+        assertTrue(error.message.orEmpty().contains("10.0.0.0/33"))
     }
 
     @Test

@@ -3,7 +3,6 @@ package com.muedsa.snapshot.open
 import io.ktor.http.HttpHeaders
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.plugins.origin
 import io.ktor.server.request.header
 import io.ktor.util.AttributeKey
 import java.security.MessageDigest
@@ -75,6 +74,7 @@ internal class CredentialStore(
 
 private val CredentialStoreKey = AttributeKey<CredentialStore>("SnapshotCredentialStore")
 private val IdentityKey = AttributeKey<CallIdentity>("SnapshotCallIdentity")
+private val ClientIpKey = AttributeKey<String>("SnapshotClientIp")
 
 /** 每个应用只构建一次凭据存储；测试可通过预先写入该属性注入管理令牌。 */
 internal fun Application.credentialStore(): CredentialStore {
@@ -104,7 +104,19 @@ internal fun ApplicationCall.suppliedCredential(): String? =
             ?.substring(7)
             ?.takeIf(String::isNotBlank)
 
-internal fun ApplicationCall.remoteHostLabel(): String = request.origin.remoteHost
+/** 始终从连接对端开始解析，仅跨过配置明确信任的代理节点。 */
+internal fun ApplicationCall.remoteHostLabel(): String {
+    attributes.getOrNull(ClientIpKey)?.let { return it }
+    val proxy = application.snapshotConfig().cors
+    val peer = request.local.remoteHost
+    val clientIp = if (proxy.trustProxyHeaders) {
+        resolveClientIp(peer, request.headers.getAll(HttpHeaders.XForwardedFor), proxy.trustedProxyCidrs)
+    } else {
+        peer
+    }
+    attributes.put(ClientIpKey, clientIp)
+    return clientIp
+}
 
 /** 分层限流的桶键：不同身份类别互不影响。 */
 internal fun ApplicationCall.rateLimitIdentity(scope: String): String = when (val identity = identity()) {

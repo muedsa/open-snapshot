@@ -272,6 +272,8 @@ ktor:
 
 snapshot:
   trust-proxy-headers: false
+  # trusted-proxy-cidrs:
+  #   - 192.0.2.10/32
   max-request-size: 1048576
   max-concurrent-renders: 4
   max-render-timeout-ms: 30000
@@ -367,6 +369,7 @@ Invalid snapshot configuration:
 | `ktor.deployment.shutdownGracePeriod` | `10000` | `SNAPSHOT_SHUTDOWN_GRACE_MS` |
 | `ktor.deployment.shutdownTimeout` | `15000` | `SNAPSHOT_SHUTDOWN_TIMEOUT_MS` |
 | `snapshot.trust-proxy-headers` | `false` | `SNAPSHOT_TRUST_PROXY_HEADERS` |
+| `snapshot.trusted-proxy-cidrs` | 空列表 | `SNAPSHOT_TRUSTED_PROXY_CIDRS`（逗号分隔） |
 | `snapshot.max-request-size` | `1048576` | `SNAPSHOT_MAX_REQUEST_SIZE` |
 | `snapshot.max-concurrent-renders` | `4` | `SNAPSHOT_MAX_CONCURRENT_RENDERS` |
 | `snapshot.max-render-timeout-ms` | `30000` | `SNAPSHOT_MAX_RENDER_TIMEOUT_MS` |
@@ -464,7 +467,7 @@ event=snapshot.access requestId=df6577b3-... ip=203.0.113.10 method=POST path=/s
 ```
 
 日志包含请求 ID、来源 IP、方法、路径、状态码、耗时和响应字节数，不记录 DSL 与图片地址；
-IP 与匿名限流使用同一来源地址。直连时取连接地址；开启 `trust-proxy-headers` 后使用可信反代传入的地址。
+IP 与匿名限流使用同一来源地址。默认取连接地址；同时开启 `trust-proxy-headers`、配置 `trusted-proxy-cidrs` 且连接对端属于可信网段时，才从 `X-Forwarded-For` 右侧开始反向跳过可信代理，取第一个不可信地址。`X-Real-IP` 不参与解析。
 日志字段中的控制字符与空格会被替换，避免日志注入。
 
 ### 指标
@@ -667,9 +670,7 @@ SNAPSHOT_IMAGE_MAX_RETRIES=2
 容器停机时 Docker 先发送 `SIGTERM`，Compose 通过 `stop_grace_period: 30s`
 为应用的排水窗口留出时间；Kubernetes 部署时请相应设置 `terminationGracePeriodSeconds`。
 
-应用默认不信任客户端传入的 Forwarded Header。Compose 会在应用端口仅对内部网络可见时设置
-`SNAPSHOT_TRUST_PROXY_HEADERS=true`，同时 Nginx 会覆盖而不是追加客户端提供的
-`X-Forwarded-For`。如果直接将应用端口暴露到公网，请保持该选项为 `false`。
+应用及 Compose 默认不信任转发头，因此默认日志与匿名限流按 Nginx 连接 IP 计。若需区分客户端，先确认反代连接到应用时的实际 IP，设置 `SNAPSHOT_TRUST_PROXY_HEADERS=true` 和 `SNAPSHOT_TRUSTED_PROXY_CIDRS=<代理IP>/32`（IPv6 为 `/128`）；多级反代可用逗号分隔的精确网段。Docker 容器 IP 可能重建后变化，需为代理固定 IP 或重新核对配置。不要把整个 Docker 私网或 `0.0.0.0/0` 设为可信；也不要将应用端口直接暴露给不可信网络。Nginx 会覆盖客户端提供的 `X-Forwarded-For`，而应用会从实际 TCP 对端反向校验可信链。头缺失、畸形或过长时回退到连接 IP；旧版直接信任最左侧 XFF 的行为已移除。
 
 生产环境建议在 Nginx 前或 Nginx 内配置 TLS。若由云负载均衡器或 CDN 终止 TLS，当前配置可以直接作为内部 HTTP 反代使用。
 
