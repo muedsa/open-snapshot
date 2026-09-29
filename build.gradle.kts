@@ -28,6 +28,14 @@ kotlin {
     jvmToolchain(21)
 }
 
+// 文档随 JAR 一起发布；容器运行时不依赖仓库目录或额外挂载。
+tasks.processResources {
+    from("docs") {
+        include("openapi.yaml", "ai-guide.md")
+        into("public-docs")
+    }
+}
+
 val versionCatalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 dependencies {
     implementation(ktorLibs.server.config.yaml)

@@ -37,7 +37,7 @@ internal fun ApplicationCall.rateLimitedScope(): String? = attributes.getOrNull(
  *
  * - 匿名调用方按来源 IP 计桶（`snapshot.rate-limit.requests`）；
  * - 已认证调用方按凭据计桶（`snapshot.rate-limit.credential-requests`），不受匿名桶约束；
- * - 管理接口（如字体预览图）单独计桶（`snapshot.rate-limit.admin-requests`）。
+ * - 字体查询与预览和 `/snapshot` 共用匿名/凭据配额；缓存管理接口单独计桶。
  *
  * 通过 `requestWeight` 返回 0 跳过不适用当前身份的限流器，使各层互不影响。
  */

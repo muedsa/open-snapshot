@@ -7,6 +7,7 @@ WORKDIR /workspace
 COPY gradle ./gradle
 COPY gradlew gradlew.bat build.gradle.kts settings.gradle.kts gradle.properties ./
 COPY src ./src
+COPY docs ./docs
 
 RUN chmod +x ./gradlew
 ARG DEPENDENCY_REFRESH

@@ -6,6 +6,11 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.plugins.ratelimit.rateLimit
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+
+private const val DEFAULT_FONT_PREVIEW_FAMILIES = 10
+private const val MAX_FONT_PREVIEW_FAMILIES = 20
 
 fun Application.configureRouting() {
     configureRoutingInternal()
@@ -28,6 +33,7 @@ private fun Application.configureRoutingInternal(
     adminTokenOverride: String? = null,
 ) {
     val config = snapshotConfig()
+    val publicDocs = if (config.publicDocsEnabled) PublicDocs.load() else null
     val adminEndpointsEnabled = adminEndpointsEnabledOverride ?: config.admin.enabled
     val adminToken = adminTokenOverride ?: config.admin.token
     require(!adminEndpointsEnabled || adminToken != null || config.credentials.any { it.admin }) {
@@ -78,35 +84,52 @@ private fun Application.configureRoutingInternal(
         }
 
         get("/") {
-            call.respondText("Open-Snapshot is running!")
+            call.respondText(
+                if (publicDocs == null) "Open-Snapshot is running!"
+                else "Open-Snapshot is running!\nOpenAPI: /openapi.yaml\nAI guide: /ai-guide.md",
+            )
         }
 
-        // 匿名按 IP、已认证按凭据分别计桶，两条限流器按身份互斥生效。
+        if (publicDocs != null) {
+            get("/openapi.yaml") {
+                call.respondText(publicDocs.openapi, ContentType.parse("application/yaml; charset=utf-8"))
+            }
+            get("/ai-guide.md") {
+                call.respondText(publicDocs.aiGuide, ContentType.parse("text/markdown; charset=utf-8"))
+            }
+        }
+
+        // 渲染与字体接口共用配额；匿名按 IP、已认证按凭据分别计桶。
         rateLimit(SnapshotAnonymousRateLimit) {
             rateLimit(SnapshotCredentialRateLimit) {
                 post("/snapshot") {
                     call.handleSnapshotRequest(snapshotContext)
                 }
-            }
-        }
 
-        if (adminEndpointsEnabled) {
-            // 管理接口共用一个限流桶：字体预览图是重渲染，其余接口也便于统一防护。
-            rateLimit(SnapshotAdminRateLimit) {
                 get("/fonts") {
-                    if (!call.requireAdmin()) return@get
+                    if (!call.requireRenderCredential(countRenderFailure = false)) return@get
                     call.respondText(FontService.listFonts())
                 }
 
                 get("/fonts.png") {
-                    if (!call.requireAdmin()) return@get
+                    if (!call.requireRenderCredential(countRenderFailure = false)) return@get
                     val requestedFamilies = call.request.queryParameters.getAll("family")
                         .orEmpty()
                         .flatMap { it.split(',') }
                         .map(String::trim)
                         .filter(String::isNotEmpty)
                     val offset = call.nonNegativeQuery("offset") ?: return@get
-                    val limit = call.nonNegativeQuery("limit") ?: return@get
+                    val requestedLimit = call.nonNegativeQuery("limit") ?: return@get
+                    if (requestedLimit > MAX_FONT_PREVIEW_FAMILIES) {
+                        respondApiError(call, ApiError(
+                            code = ErrorCodes.INVALID_QUERY,
+                            message = "Query parameter 'limit' must be at most $MAX_FONT_PREVIEW_FAMILIES",
+                            requestId = call.ensureRequestIdHeader(),
+                            status = HttpStatusCode.BadRequest,
+                        ))
+                        return@get
+                    }
+                    val limit = requestedLimit.takeIf { it > 0 } ?: DEFAULT_FONT_PREVIEW_FAMILIES
 
                     val selection = selectFontFamilies(
                         available = FontService.familyNames(),
@@ -124,19 +147,51 @@ private fun Application.configureRoutingInternal(
                         return@get
                     }
 
-                    withTimeout(snapshotContext.maxRenderTimeoutMs) {
-                        val cacheKey = fontPreviewCacheKey(selection.selected, offset, limit)
-                        renderResultCache?.get(cacheKey)?.let { cached ->
-                            call.respondBytes(cached.bytes, cached.contentType)
-                            return@withTimeout
+                    try {
+                        withTimeout(snapshotContext.maxRenderTimeoutMs) {
+                            val cacheKey = fontPreviewCacheKey(selection.selected, offset, limit)
+                            renderResultCache?.get(cacheKey)?.let { cached ->
+                                call.respondBytes(cached.bytes, cached.contentType)
+                                return@withTimeout
+                            }
+                            val preview = renderExecutor.run { FontService.drawFonts(selection.selected) }
+                            val result = SnapshotResult(preview, ContentType.Image.PNG)
+                            renderResultCache?.put(cacheKey, result)
+                            call.respondBytes(result.bytes, result.contentType)
                         }
-                        val preview = renderExecutor.run { FontService.drawFonts(selection.selected) }
-                        val result = SnapshotResult(preview, ContentType.Image.PNG)
-                        renderResultCache?.put(cacheKey, result)
-                        call.respondBytes(result.bytes, result.contentType)
+                    } catch (error: TimeoutCancellationException) {
+                        respondApiError(call, ApiError(
+                            code = ErrorCodes.RENDER_TIMEOUT,
+                            message = "Font preview exceeded ${snapshotContext.maxRenderTimeoutMs} ms",
+                            requestId = call.ensureRequestIdHeader(),
+                            status = HttpStatusCode.GatewayTimeout,
+                        ))
+                    } catch (error: RenderQueueFullException) {
+                        call.response.headers.append(HttpHeaders.RetryAfter, "1")
+                        respondApiError(call, ApiError(
+                            code = ErrorCodes.QUEUE_FULL,
+                            message = "Render queue is full (${error.maxQueueSize} waiting), retry later",
+                            requestId = call.ensureRequestIdHeader(),
+                            status = HttpStatusCode.ServiceUnavailable,
+                        ))
+                    } catch (error: RenderQueueTimeoutException) {
+                        call.response.headers.append(HttpHeaders.RetryAfter, "1")
+                        respondApiError(call, ApiError(
+                            code = ErrorCodes.QUEUE_TIMEOUT,
+                            message = "Waited longer than ${error.queueTimeoutMs} ms for a render slot",
+                            requestId = call.ensureRequestIdHeader(),
+                            status = HttpStatusCode.ServiceUnavailable,
+                        ))
+                    } catch (error: CancellationException) {
+                        throw error
                     }
                 }
+            }
+        }
 
+        if (adminEndpointsEnabled) {
+            // 缓存管理接口共用一个管理限流桶。
+            rateLimit(SnapshotAdminRateLimit) {
                 get("/cacheInfo") {
                     if (!call.requireAdmin()) return@get
                     val (count, bytes) = imageCacheInfo()

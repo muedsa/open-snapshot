@@ -120,6 +120,9 @@ fi
 if [ -n "${SNAPSHOT_ANONYMOUS_ACCESS_ENABLED:-}" ]; then
     set -- "$@" "-P:snapshot.anonymous-access-enabled=${SNAPSHOT_ANONYMOUS_ACCESS_ENABLED}"
 fi
+if [ -n "${SNAPSHOT_PUBLIC_DOCS_ENABLED:-}" ]; then
+    set -- "$@" "-P:snapshot.public-docs-enabled=${SNAPSHOT_PUBLIC_DOCS_ENABLED}"
+fi
 if [ -n "${SNAPSHOT_MAX_IMAGE_NUM:-}" ]; then
     set -- "$@" "-P:snapshot.image.max-image-num-once=${SNAPSHOT_MAX_IMAGE_NUM}"
 fi

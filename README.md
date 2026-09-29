@@ -11,7 +11,7 @@ Open Snapshot 是基于 Ktor 和 snapshot parser 的开放构图服务。
 ```bash
 curl -X POST http://localhost:8080/snapshot `
   -H "Content-Type: text/plain" `
-  --data '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>' `
+  --data '<Snapshot type="png"><Container width="200" height="100" color="#FF0000FF"/></Snapshot>' `
   --output result.png
 ```
 
@@ -20,7 +20,7 @@ curl -X POST http://localhost:8080/snapshot `
 | 属性 | 说明 |
 |---|---|
 | `type` | 输出格式：`png`（默认）、`jpg`、`webp`，其他值会被解析器拒绝 |
-| `background` | 画布背景色，`#AARRGGBB` |
+| `background` | 画布背景色，支持 CSS 颜色语法；8 位十六进制为 `#RRGGBBAA` |
 | `debug` | 绘制布局辅助信息，默认 `false`，需显式写 `debug="true"` |
 
 画布尺寸由 DSL 内容布局决定，并受 `max-canvas-width`、`max-canvas-height`、`max-canvas-pixels` 限制。
@@ -97,7 +97,7 @@ URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Dat
 | `QUEUE_TIMEOUT` | 503 | 排队等待超过 `render-queue-timeout-ms`，带 `Retry-After` |
 | `SERVICE_UNAVAILABLE` | 503 | 服务正在排水，不再接受新渲染 |
 | `NOT_READY` | 503 | `/ready` 探测未通过 |
-| `UNAUTHORIZED` | 401 | 管理接口缺少或提供了错误的 Bearer 令牌 |
+| `UNAUTHORIZED` | 401 | 缺少或提供了错误的 API Key / 管理凭据 |
 | `INTERNAL_ERROR` | 500 | 未预期的内部错误，`message` 不包含内部细节 |
 
 #### 解析错误高亮图
@@ -164,8 +164,10 @@ X-Snapshot-Image-Count: 2
 | `GET /health` | 存活检查：进程可响应即返回 `OK` |
 | `GET /ready` | 就绪检查：渲染链路可用且未在排水时返回 `READY`，否则 `503` + `NOT_READY` |
 | `GET /metrics` | Prometheus 文本指标（`text/plain; version=0.0.4`） |
-| `GET /fonts` | 返回可用字体列表（管理接口） |
-| `GET /fonts.png` | 字体预览图（管理接口），支持 `family`、`offset`、`limit` |
+| `GET /openapi.yaml` | OpenAPI 定义（需开启公开文档） |
+| `GET /ai-guide.md` | AI 使用指南（需开启公开文档） |
+| `GET /fonts` | 返回可用字体列表；鉴权与限流同 `/snapshot` |
+| `GET /fonts.png` | 字体预览图；鉴权与限流同 `/snapshot`，支持 `family`、`offset`、`limit` |
 | `GET /cacheInfo` | 查看网络图片缓存与渲染结果缓存统计（管理接口） |
 | `POST /cacheClear` | 清理网络图片缓存与渲染结果缓存（管理接口） |
 
@@ -173,6 +175,12 @@ X-Snapshot-Image-Count: 2
 `requestId` 与之相同。
 
 完整的接口定义见 [`docs/openapi.yaml`](docs/openapi.yaml)（OpenAPI 3.0，包含全部接口、错误码与响应示例）。
+
+### 可选公开文档
+
+设置 `snapshot.public-docs-enabled: true`，或在容器环境中设置 `SNAPSHOT_PUBLIC_DOCS_ENABLED=true`，即可通过服务自身的 `GET /openapi.yaml` 和 `GET /ai-guide.md` 获取 OpenAPI 定义与 [AI 使用指南](docs/ai-guide.md)。两个文档在构建时打包进 JAR，无需额外挂载；默认关闭时路由不注册并返回 404。开启后根路径 `/` 也会显示文档链接。公开文档仅包含静态说明，不包含运行时配置或密钥，且不改变 `/snapshot` 的鉴权和限流。
+
+OpenAPI 的服务器地址使用相对路径 `/`，因此经 Nginx 以站点根路径发布时，导入工具会请求当前站点；若部署在子路径下，需相应调整文档中的 `servers`。
 
 ### 可选 API Key 鉴权
 
@@ -207,7 +215,7 @@ snapshot:
 curl -X POST http://localhost:8080/snapshot `
   -H "X-API-Key: $SNAPSHOT_API_KEY" `
   -H "Content-Type: text/plain" `
-  --data '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>' `
+  --data '<Snapshot type="png"><Container width="200" height="100" color="#FF0000FF"/></Snapshot>' `
   --output result.png
 ```
 
@@ -215,7 +223,7 @@ curl -X POST http://localhost:8080/snapshot `
 curl -X POST http://localhost:8080/snapshot `
   -H "Authorization: Bearer $SNAPSHOT_API_KEY" `
   -H "Content-Type: text/plain" `
-  --data '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>' `
+  --data '<Snapshot type="png"><Container width="200" height="100" color="#FF0000FF"/></Snapshot>' `
   --output result.png
 ```
 
@@ -230,7 +238,7 @@ SNAPSHOT_ANONYMOUS_ACCESS_ENABLED=true
 匿名请求仍按来源 IP 使用 `rate-limit.requests` 配额；有效 API Key 使用独立的凭据配额。
 显式携带错误 API Key 的请求仍返回 `401`，不会无声降级为匿名访问。该开关默认 `false`。
 
-管理接口接受带 `admin: true` 的 API Key 或管理令牌；凭据有效但非管理员返回 `403 FORBIDDEN`，未认证返回 `401 UNAUTHORIZED`：
+缓存管理接口接受带 `admin: true` 的 API Key 或管理令牌；凭据有效但非管理员返回 `403 FORBIDDEN`，未认证返回 `401 UNAUTHORIZED`。`/fonts` 和 `/fonts.png` 不属于管理接口，与 `/snapshot` 使用同一鉴权与限流规则：
 
 ```dotenv
 SNAPSHOT_ADMIN_ENDPOINTS_ENABLED=true
@@ -243,7 +251,7 @@ SNAPSHOT_ADMIN_TOKEN=replace-with-a-long-random-token
 |---|---|---|---|
 | 匿名（未携带凭据） | 按来源 IP | `rate-limit.requests` / `window-ms` | 6 次 / 60 秒 |
 | 已认证（有效 API Key） | 按凭据名称 | `rate-limit.credential-requests` / `credential-window-ms` | 60 次 / 60 秒 |
-| 管理接口（字体预览图等） | 按管理凭据或来源 IP | `rate-limit.admin-requests` / `admin-window-ms` | 6 次 / 60 秒 |
+| 缓存管理接口 | 按管理凭据或来源 IP | `rate-limit.admin-requests` / `admin-window-ms` | 6 次 / 60 秒 |
 
 三层互不影响：已认证调用方不再占用匿名 IP 桶，匿名流量也不会吃掉凭据配额。
 
@@ -301,6 +309,8 @@ snapshot:
   api-key: ""
   # 配置 API Key 后是否仍允许匿名调用；默认关闭。
   anonymous-access-enabled: false
+  # 是否对外提供 /openapi.yaml 与 /ai-guide.md；默认关闭。
+  public-docs-enabled: false
   access-log-enabled: true
   access-log-skip-paths:
     - /health
@@ -389,6 +399,7 @@ Invalid snapshot configuration:
 | `snapshot.api-key` | 空（开放调用） | `SNAPSHOT_API_KEY` |
 | `snapshot.api-keys`（列表） | 空 | `SNAPSHOT_API_KEYS`（`名称:密钥[:admin]`） |
 | `snapshot.anonymous-access-enabled` | `false` | `SNAPSHOT_ANONYMOUS_ACCESS_ENABLED` |
+| `snapshot.public-docs-enabled` | `false` | `SNAPSHOT_PUBLIC_DOCS_ENABLED` |
 | `snapshot.admin-endpoints-enabled` | `false` | `SNAPSHOT_ADMIN_ENDPOINTS_ENABLED` |
 | `snapshot.admin-token` | 空 | `SNAPSHOT_ADMIN_TOKEN` |
 | `snapshot.metrics-enabled` | `true` | `SNAPSHOT_METRICS_ENABLED` |
@@ -538,21 +549,19 @@ scrape_configs:
 
 ### 字体预览
 
-`GET /fonts.png` 支持按需渲染，避免系统字体很多时一次性出图过大：
+`GET /fonts` 返回当前实际安装的字体族，每行一个；`GET /fonts.png` 支持按需渲染。两者无需启用管理接口，但会与 `/snapshot` 共用相应身份的限流配额。如果已配置 API Key 且未允许匿名访问，请在下面的命令中添加普通 API Key 请求头。字体预览每页默认 10 个、最多 20 个，避免一次性出图过大：
 
 ```bash
 # 只渲染指定字体（逗号分隔，名称大小写不敏感）
-curl -H "Authorization: Bearer $SNAPSHOT_ADMIN_TOKEN" \
-  --get --data-urlencode "family=DejaVu Serif,Inter" \
+curl --get --data-urlencode "family=DejaVu Serif,Inter" \
   http://localhost:8080/fonts.png --output fonts.png
 
 # 分页：每页 10 个字体，第 2 页
-curl -H "Authorization: Bearer $SNAPSHOT_ADMIN_TOKEN" \
-  "http://localhost:8080/fonts.png?offset=10&limit=10" --output fonts-page2.png
+curl "http://localhost:8080/fonts.png?offset=10&limit=10" --output fonts-page2.png
 ```
 
 - `family` 中有不存在的字体族时返回 `400 FONT_NOT_FOUND`（消息里列出未知名称）；
-- `offset`/`limit` 不是非负整数时返回 `400 INVALID_QUERY`；`limit=0` 表示不限制；
+- `offset`/`limit` 不是非负整数或 `limit > 20` 时返回 `400 INVALID_QUERY`；省略或设为 0 时每页 10 个；
 - 相同查询会命中渲染结果缓存，重复拉取不会再次渲染。
 
 ### 渲染结果缓存与背压

@@ -35,6 +35,8 @@ class OpenApiSpecTest {
 
         assertEquals(
             setOf(
+                "/openapi.yaml",
+                "/ai-guide.md",
                 "/snapshot",
                 "/health",
                 "/ready",

@@ -128,6 +128,8 @@ internal class SnapshotConfig(
     val credentials: List<ApiCredential>,
     /** 配置客户端凭据后，是否仍允许未携带凭据的请求按匿名身份访问 `/snapshot`。 */
     val anonymousAccessEnabled: Boolean,
+    /** 是否向外部提供 OpenAPI 定义与 AI 使用指南。 */
+    val publicDocsEnabled: Boolean,
     val metricsAccess: MetricsAccess,
     val accessLog: AccessLogSettings,
     val metricsEnabled: Boolean,
@@ -324,6 +326,7 @@ internal object SnapshotConfigLoader {
             apiKey = apiKey,
             credentials = credentials,
             anonymousAccessEnabled = boolean("snapshot.anonymous-access-enabled", false),
+            publicDocsEnabled = boolean("snapshot.public-docs-enabled", false),
             metricsAccess = metricsAccess ?: MetricsAccess.OPEN,
             accessLog = AccessLogSettings(
                 enabled = boolean("snapshot.access-log-enabled", true),

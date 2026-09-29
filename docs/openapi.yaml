@@ -10,29 +10,65 @@ info:
     - 错误统一返回 JSON，字段为 `code`、`message`、`requestId`。
     - 限流分层：匿名调用方按来源 IP，已认证调用方按凭据，管理接口单独计桶；
       超限返回 `429` 并带 `Retry-After`，同时返回 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`。
+      `/fonts` 与 `/fonts.png` 和 `/snapshot` 共用匿名/凭据配额。
     - 配置 `snapshot.api-key`、`SNAPSHOT_API_KEY`、`SNAPSHOT_API_KEYS` 或 `snapshot.api-keys` 后，
       `/snapshot` 默认需要携带 API Key；设置 `snapshot.anonymous-access-enabled=true` 后仍允许匿名访问，
       匿名请求按来源 IP 限流，有效 API Key 使用独立的凭据配额。
     - `/metrics` 可通过 `snapshot.metrics-access` 设置为 `open`（默认）、`credential` 或 `admin`；
       `/health`、`/ready` 始终开放。
+    - `snapshot.public-docs-enabled=true` 时公开 `/openapi.yaml` 与 `/ai-guide.md`；否则返回 404。
   version: 1.0.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
-  - url: http://localhost:8080
-    description: 本地默认监听地址
+  - url: /
+    description: 与当前文档同源的服务根路径
 
 tags:
+  - name: docs
+    description: 可选公开文档；需开启 snapshot.public-docs-enabled
   - name: render
     description: 构图渲染
+  - name: fonts
+    description: 字体查询与预览；鉴权和限流同构图渲染
   - name: probe
     description: 存活、就绪与指标
   - name: admin
     description: 管理接口，默认不注册；启用后需要 Bearer 令牌
 
 paths:
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      summary: 获取 OpenAPI 定义
+      description: 仅在 snapshot.public-docs-enabled=true 时注册；否则返回 404。
+      responses:
+        "200":
+          description: 当前版本的 OpenAPI YAML 定义。
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "404":
+          description: 公开文档功能未启用。
+
+  /ai-guide.md:
+    get:
+      tags: [docs]
+      summary: 获取 AI 使用指南
+      description: 仅在 snapshot.public-docs-enabled=true 时注册；否则返回 404。
+      responses:
+        "200":
+          description: Snapshot DSL 与渲染接口的精简 Markdown 使用指南。
+          content:
+            text/markdown:
+              schema:
+                type: string
+        "404":
+          description: 公开文档功能未启用。
+
   /snapshot:
     post:
       tags: [render]
@@ -64,7 +100,7 @@ paths:
           text/plain:
             schema:
               type: string
-              example: '<Snapshot type="png"><Container width="200" height="100" color="#FFFF0000"/></Snapshot>'
+              example: '<Snapshot type="png"><Container width="200" height="100" color="#FF0000FF"/></Snapshot>'
       responses:
         "200":
           description: 渲染成功，响应体为图片字节。
@@ -235,10 +271,12 @@ paths:
 
   /fonts:
     get:
-      tags: [admin]
+      tags: [fonts]
       summary: 字体列表
       security:
-        - AdminBearer: []
+        - ApiKeyHeader: []
+        - BearerApiKey: []
+        - {}
       responses:
         "200":
           description: 每行一个字体族名称。
@@ -248,18 +286,20 @@ paths:
                 type: string
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
+        "429":
+          description: 与 `/snapshot` 共用调用方配额；超限时带 `Retry-After`。
 
   /fonts.png:
     get:
-      tags: [admin]
+      tags: [fonts]
       summary: 字体预览图
       description: |
         渲染字体样例图。可用 `family` 只渲染指定字体，并用 `offset`/`limit` 分页，
-        避免字体数量多时图片过大。相同查询会命中渲染结果缓存。
+        避免字体数量多时图片过大。每页默认 10 个、最多 20 个；相同查询会命中渲染结果缓存。
       security:
-        - AdminBearer: []
+        - ApiKeyHeader: []
+        - BearerApiKey: []
+        - {}
       parameters:
         - name: family
           in: query
@@ -279,11 +319,12 @@ paths:
         - name: limit
           in: query
           required: false
-          description: 单页字体数量，默认 0 表示不限制。
+          description: 单页字体数量，省略或 0 表示默认 10；最大 20。
           schema:
             type: integer
             minimum: 0
-            default: 0
+            maximum: 20
+            default: 10
       responses:
         "200":
           description: 字体预览 PNG。
@@ -295,7 +336,7 @@ paths:
         "400":
           description: |
             查询参数不合法：`FONT_NOT_FOUND`（`family` 中有不存在的字体族）、
-            `INVALID_QUERY`（`offset`/`limit` 不是非负整数）。
+            `INVALID_QUERY`（`offset`/`limit` 不是非负整数或 `limit > 20`）。
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -309,8 +350,12 @@ paths:
                 requestId: 3f1c1b6e-6a1f-4a5e-9d4c-2b7f0f9a1c33
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
+        "429":
+          description: 与 `/snapshot` 共用调用方配额；超限时带 `Retry-After`。
+        "503":
+          description: 渲染队列已满或排队超时；JSON 错误码为 `QUEUE_FULL` 或 `QUEUE_TIMEOUT`，带 `Retry-After`。
+        "504":
+          description: 字体预览超过渲染超时，JSON 错误码为 `RENDER_TIMEOUT`。
 
   /cacheInfo:
     get:

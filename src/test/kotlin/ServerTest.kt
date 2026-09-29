@@ -163,8 +163,8 @@ class ServerTest {
     fun `admin endpoints are disabled by default`() = testApplication {
         configure()
 
-        assertEquals(HttpStatusCode.NotFound, client.get("/fonts").status)
-        assertEquals(HttpStatusCode.NotFound, client.get("/fonts.png").status)
+        assertEquals(HttpStatusCode.OK, client.get("/fonts").status)
+        assertEquals(HttpStatusCode.OK, client.get("/fonts.png?limit=1").status)
         assertEquals(HttpStatusCode.NotFound, client.get("/cacheInfo").status)
     }
 
@@ -174,11 +174,11 @@ class ServerTest {
             configureRoutingForTests("test-admin-token")
         }
 
-        val unauthorized = client.get("/fonts")
+        val unauthorized = client.get("/cacheInfo")
         assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
         assertTrue(unauthorized.body<String>().contains("UNAUTHORIZED"))
 
-        val authorized = client.get("/fonts") {
+        val authorized = client.get("/cacheInfo") {
             bearerAuth("test-admin-token")
         }
 

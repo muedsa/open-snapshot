@@ -84,18 +84,18 @@ class AccessControlTest {
         }
 
         // 带 admin 标记的 API Key 与管理令牌都能访问管理接口。
-        assertEquals(HttpStatusCode.OK, client.get("/fonts") { header("X-API-Key", OPS_KEY) }.status)
+        assertEquals(HttpStatusCode.OK, client.get("/cacheInfo") { header("X-API-Key", OPS_KEY) }.status)
 
-        val forbidden = client.get("/fonts") { header("X-API-Key", WEB_KEY) }
+        val forbidden = client.get("/cacheInfo") { header("X-API-Key", WEB_KEY) }
         assertEquals(HttpStatusCode.Forbidden, forbidden.status)
         assertTrue(forbidden.body<String>().contains("FORBIDDEN"))
 
-        val unauthorized = client.get("/fonts")
+        val unauthorized = client.get("/cacheInfo")
         assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
 
         assertEquals(
             HttpStatusCode.OK,
-            client.get("/fonts") { header(HttpHeaders.Authorization, "Bearer $ADMIN_TOKEN") }.status,
+            client.get("/cacheInfo") { header(HttpHeaders.Authorization, "Bearer $ADMIN_TOKEN") }.status,
         )
     }
 
@@ -105,8 +105,8 @@ class AccessControlTest {
             configureRoutingForTests(adminToken = ADMIN_TOKEN)
         }
 
-        assertEquals(HttpStatusCode.OK, client.get("/fonts") { header(HttpHeaders.Authorization, "Bearer $ADMIN_TOKEN") }.status)
-        assertEquals(HttpStatusCode.Unauthorized, client.get("/fonts").status)
+        assertEquals(HttpStatusCode.OK, client.get("/cacheInfo") { header(HttpHeaders.Authorization, "Bearer $ADMIN_TOKEN") }.status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/cacheInfo").status)
     }
 
     @Test
@@ -156,6 +156,46 @@ class AccessControlTest {
             metrics.contains("""snapshot_rate_limited_total{scope="anonymous"} 1"""),
             metrics.lineSequence().filter { it.contains("rate_limited") }.joinToString("\n"),
         )
+    }
+
+    @Test
+    fun `font endpoints require ordinary api key when snapshot does`() = testApplication {
+        configure(overrides = { put("snapshot.api-key", WEB_KEY) })
+
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/fonts").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/fonts.png?limit=1").status)
+        assertEquals(HttpStatusCode.OK, client.get("/fonts") { header("X-API-Key", WEB_KEY) }.status)
+        assertEquals(HttpStatusCode.OK, client.get("/fonts.png?limit=1") { header("X-API-Key", WEB_KEY) }.status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/fonts") { header("X-API-Key", UNKNOWN_KEY) }.status)
+    }
+
+    @Test
+    fun `font endpoints and snapshot share anonymous quota`() = testApplication {
+        configure(overrides = {
+            put("snapshot.rate-limit.requests", "2")
+            put("snapshot.rate-limit.window-ms", "60000")
+        })
+
+        val list = client.get("/fonts")
+        assertEquals(HttpStatusCode.OK, list.status)
+        assertEquals("2", list.headers["X-RateLimit-Limit"])
+        assertEquals(HttpStatusCode.OK, client.get("/fonts.png?limit=1").status)
+        assertEquals(HttpStatusCode.TooManyRequests, render(apiKey = null).status)
+    }
+
+    @Test
+    fun `font endpoints share credential quota and honor anonymous access setting`() = testApplication {
+        configure(overrides = {
+            put("snapshot.api-key", WEB_KEY)
+            put("snapshot.anonymous-access-enabled", "true")
+            put("snapshot.rate-limit.credential-requests", "2")
+            put("snapshot.rate-limit.credential-window-ms", "60000")
+        })
+
+        assertEquals(HttpStatusCode.OK, client.get("/fonts").status)
+        assertEquals(HttpStatusCode.OK, client.get("/fonts") { header("X-API-Key", WEB_KEY) }.status)
+        assertEquals(HttpStatusCode.OK, render(apiKey = WEB_KEY).status)
+        assertEquals(HttpStatusCode.TooManyRequests, client.get("/fonts.png?limit=1") { header("X-API-Key", WEB_KEY) }.status)
     }
 
     @Test

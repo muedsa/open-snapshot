@@ -14,12 +14,12 @@ internal const val API_KEY_HEADER = "X-API-Key"
  *
  * 凭据通过 [CallIdentity] 解析，支持多个 API Key 与平滑轮换（新旧 Key 可同时在列）。
  */
-internal suspend fun ApplicationCall.requireRenderCredential(): Boolean {
+internal suspend fun ApplicationCall.requireRenderCredential(countRenderFailure: Boolean = true): Boolean {
     if (!application.credentialStore().requiresCredential) return true
     if (identity().isAuthenticated) return true
     if (application.snapshotConfig().anonymousAccessEnabled && suppliedCredential() == null) return true
 
-    Metrics.renderFailed(ErrorCodes.UNAUTHORIZED)
+    if (countRenderFailure) Metrics.renderFailed(ErrorCodes.UNAUTHORIZED)
     respondUnauthorized("A valid API key is required")
     return false
 }
