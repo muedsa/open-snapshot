@@ -44,7 +44,13 @@ curl --fail-with-body "${SNAPSHOT_URL:-http://localhost:8080}/fonts"
 
 ## 错误处理
 
-非成功响应通常是包含 `code`、`message`、`requestId` 的 JSON。`400 PARSE_ERROR` 应根据消息中的位置修正 DSL 后再提交；`413 REQUEST_TOO_LARGE` 需缩小请求体；`401` 需检查凭据；`429` 和部分 `503` 响应可参考 `Retry-After` 延迟重试。成功和失败都可用 `X-Request-Id` 关联服务日志。
+非成功响应通常是包含 `code`、`message`、`requestId` 的 JSON。以 `code` 判断错误类型；`message` 是可变化、可多行、可截断的可读说明，不要按文案关键词分类或假定固定格式。渲染错误消息最多 1024 个 UTF-16 代码单元。成功和失败都可用 `X-Request-Id` 关联服务日志。
+
+属性错误可能额外返回 `diagnostic`。修正 DSL 时优先读取 `attributeName`、可选的 `elementName`、`position`、`format`、`allowedValues`、`examples`，无需从消息中提取这些信息。`position.offset` 从 0 开始，`line` 和 `column` 从 1 开始；偏移和列按 UTF-16 代码单元计数，未知字段会省略。`allowedValues` 对简单枚举表示候选，对边框等复合格式可能仅描述其中一个字段，仍须遵循 `format`。
+
+`valueState` 区分 `missing`（缺失）、`unassigned`（只写属性名）、`empty`（空字符串）和 `present`（其他已赋值输入）。服务不返回原始属性值或预览，请根据自己提交的 DSL 定位修改。候选和示例可能为空，`truncated: true` 表示部分提示已裁剪或省略。结构错误、组件组合约束等可能完全没有 `diagnostic`，此时参考 `message` 和自己提交的源码。每次只报告首个错误。
+
+`400 PARSE_ERROR` 应修正 DSL 后再提交；`IMAGE_LOAD_ERROR` 应检查图片来源、格式和资源限制，即使附带属性诊断也不改变这个错误码；`413 REQUEST_TOO_LARGE` 需缩小请求体；`401` 需检查凭据；`429` 和部分 `503` 响应可参考 `Retry-After` 延迟重试。不要把相同的格式错误原样重试。
 
 默认不要使用 `?errorImage=png`：它会把解析错误改为图片响应，不利于程序读取错误消息。需要直观查看错误时才加上该参数。
 

@@ -85,7 +85,7 @@ URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Dat
 | `code` | HTTP | 说明 |
 |---|---|---|
 | `EMPTY_REQUEST` | 400 | 请求体为空或只有空白字符 |
-| `PARSE_ERROR` | 400 | DSL 语法错误，`message` 含出错位置与附近的源码片段 |
+| `PARSE_ERROR` | 400 | DSL 语法或属性错误；可用位置会写入 `message`，属性错误可附带 `diagnostic` |
 | `RENDER_ERROR` | 400 | 超出画布限制或布局失败 |
 | `IMAGE_LOAD_ERROR` | 400 | 图片地址非法、非 HTTP(S)、私网地址、超时或格式错误 |
 | `REQUEST_TOO_LARGE` | 413 | 请求体超过 `max-request-size` |
@@ -100,6 +100,36 @@ URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Dat
 | `UNAUTHORIZED` | 401 | 缺少或提供了错误的 API Key / 管理凭据 |
 | `INTERNAL_ERROR` | 500 | 未预期的内部错误，`message` 不包含内部细节 |
 
+属性错误会额外返回可选的 `diagnostic`，例如 `<Row mainAxisAlignment="MIDDLE"/>`：
+
+```json
+{
+  "code": "PARSE_ERROR",
+  "message": "属性值无效 [mainAxisAlignment]，元素 <Row>\n格式：以下取值之一，区分大小写\n...",
+  "requestId": "...",
+  "diagnostic": {
+    "attributeName": "mainAxisAlignment",
+    "elementName": "Row",
+    "valueState": "present",
+    "position": { "offset": 34, "line": 1, "column": 35 },
+    "format": "以下取值之一，区分大小写",
+    "allowedValues": ["START", "END", "CENTER", "SPACE_BETWEEN", "SPACE_AROUND", "SPACE_EVENLY"],
+    "examples": ["START"]
+  }
+}
+```
+
+- `message` 是可变化、可多行的可读说明，不要匹配整条文案或用关键词判断错误类型。渲染错误消息最多 1024 个 UTF-16 代码单元；超长内容以 `…` 结尾，位置会单独保留。
+- `diagnostic` 只在 Parser 提供属性诊断时出现；结构错误、组件组合约束等可能没有。图片解码错误也可能带诊断，但错误码仍为 `IMAGE_LOAD_ERROR`。
+- `valueState`：`missing` 为属性缺失，`unassigned` 为只写属性名，`empty` 为空字符串，`present` 为其余已赋值输入（包括纯空白）。不返回 `rawValue` 或原值预览。
+- `position.offset` 是从 0 开始的 UTF-16 字符偏移；行、列从 1 开始，列也按 UTF-16 计数。未知位置或未知字段省略，不用 0 代替未知。`elementName`、`format` 也可能省略。
+- `allowedValues`、`examples` 总是数组；对边框等复合格式，候选值可能仅对应其中一个字段，必须同时遵循 `format`。只报告首个错误，不汇总全部问题。
+- 名称最长 128、格式说明最长 512；候选最多 64 项（每项最长 128），示例最多 3 项（每项最长 160）。过长候选/示例会省略而不是改写为无效值；信息被裁剪时返回 `truncated: true`。
+- 属性错误消息按诊断信息重新生成，不透传原始异常与 cause。结构错误保留受限源码上下文；JSON 上下文和错误图会隐藏 `url`、`dataUri`、`password`、`token`、`apiKey`、`authorization` 属性值及显式 URI。不要在其他 DSL 文本中放入密钥。
+- 渲染失败日志记录请求 ID、错误码、异常类型、属性名与位置，不记录原始异常消息或 cause；内部错误额外保留有限的栈帧定位信息。
+
+上述结构化诊断需要包含 `ParseException.attributeDiagnostic` 的 Parser 快照。构建使用滚动 `0.0.0-SNAPSHOT`，升级时需刷新依赖并运行回归测试；不要仅凭版本字符串判断能力。
+
 #### 解析错误高亮图
 
 请求带 `?errorImage=png` 时，解析失败会返回一张错误卡片（PNG）而不是 JSON，便于在调试工具里直接查看：
@@ -111,7 +141,7 @@ curl -X POST "http://localhost:8080/snapshot?errorImage=png" `
   --output error.png
 ```
 
-卡片包含：错误标题、带行号的源码摘录（错误行浅红底、`^` 指向出错列）、错误消息、位置与 `requestId`。
+卡片包含：错误标题、带行号的源码摘录（错误行浅红底、`^` 指向出错列）、错误消息、位置与 `requestId`。属性错误按独立额度展示摘要、格式、候选值与示例，避免长摘要挤掉修正提示；消息最多 768 个 UTF-16 代码单元、8 个逻辑行，每行最多 160 个代码单元（显示时可自动折行）。敏感属性和 URI 用等长占位符隐藏，以保留定位。
 
 - 只在解析失败时生效；解析成功时该参数被忽略，正常出图；
 - HTTP 状态仍为 `400`，并额外返回 `X-Snapshot-Error-Code`、`X-Snapshot-Error-Position`、`X-Snapshot-Error-Location`；

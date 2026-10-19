@@ -44,6 +44,7 @@ dependencies {
     implementation(ktorLibs.server.cors)
     implementation(ktorLibs.server.netty)
     implementation(ktorLibs.server.rateLimit)
+    implementation(ktorLibs.serialization.kotlinx.json)
     implementation(libs.logback.classic)
 
     implementation(libs.snapshot.parser)

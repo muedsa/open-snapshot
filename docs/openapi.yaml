@@ -7,7 +7,7 @@ info:
     约定：
 
     - 所有响应都带 `X-Request-Id`；调用方传入格式合法的值会被沿用，否则服务生成 UUID。
-    - 错误统一返回 JSON，字段为 `code`、`message`、`requestId`。
+    - 默认错误响应为 JSON，必有 `code`、`message`、`requestId`，属性错误可能附带 `diagnostic`。
     - 限流分层：匿名调用方按来源 IP，已认证调用方按凭据，管理接口单独计桶；
       超限返回 `429` 并带 `Retry-After`，同时返回 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`。
       `/fonts` 与 `/fonts.png` 和 `/snapshot` 共用匿名/凭据配额。
@@ -454,9 +454,14 @@ components:
     BadRequest:
       description: |
         请求不合法，`code` 取值：
-        `EMPTY_REQUEST`（空请求体）、`PARSE_ERROR`（DSL 语法错误，message 含位置与附近源码）、
+        `EMPTY_REQUEST`（空请求体）、`PARSE_ERROR`（DSL 语法或属性错误，message 含可用位置）、
         `RENDER_ERROR`（超出画布/文档结构限制或布局失败）、`IMAGE_LOAD_ERROR`
         （图片地址非法、加载失败、Data URI 格式非法或超出图片预算）。
+
+        Parser 提供属性诊断时附带可选的 `diagnostic`；结构错误等可能没有。
+        图片错误即使包含属性诊断，仍保留 `IMAGE_LOAD_ERROR`。
+        属性错误不回显原值；结构错误的源码上下文会隐藏敏感属性和显式 URI。
+        错误图使用相同的隐藏规则，按独立额度展示格式、候选值和示例。
 
         带 `?errorImage=png` 且 `code` 为 `PARSE_ERROR` 时，响应体为解析错误高亮图（`image/png`），
         并返回 `X-Snapshot-Error-Code`、`X-Snapshot-Error-Position`、`X-Snapshot-Error-Location` 响应头；
@@ -560,7 +565,73 @@ components:
             - INTERNAL_ERROR
         message:
           type: string
-          description: 面向调用方的错误说明。
+          description: 面向调用方的可读说明，可变化、多行或截断。渲染错误最多 1024 个 UTF-16 代码单元；不要按文案判断错误类型。
         requestId:
           type: string
           description: 请求 ID，与服务日志中的 requestId 对应。
+        diagnostic:
+          $ref: "#/components/schemas/AttributeDiagnostic"
+    AttributeDiagnostic:
+      type: object
+      description: |
+        首个属性错误的受限诊断，不包含原始值、原值预览或 cause。
+        结构错误、组件组合校验等可能没有此对象。字段缺失不表示值为 0 或空字符串。
+        长度限制按 UTF-16 代码单元执行。
+      required: [attributeName, valueState, allowedValues, examples]
+      properties:
+        attributeName:
+          type: string
+          maxLength: 128
+          example: mainAxisAlignment
+        elementName:
+          type: string
+          maxLength: 128
+          description: 所在标签；缺少元素上下文时省略。
+          example: Row
+        valueState:
+          type: string
+          enum: [missing, unassigned, empty, present]
+          description: 分别表示属性缺失、只写属性名、空字符串、其他已赋值输入（包括纯空白）。
+        position:
+          $ref: "#/components/schemas/ErrorPosition"
+        format:
+          type: string
+          maxLength: 512
+          description: 期望格式；Parser 未提供时省略。
+          example: 以下取值之一，区分大小写
+        allowedValues:
+          type: array
+          maxItems: 64
+          description: 简单枚举的候选值；复合格式可能仅为某个字段的候选，仍须遵循 format。无候选时为空数组，过长条目省略。
+          items:
+            type: string
+            maxLength: 128
+          example: [START, END, CENTER, SPACE_BETWEEN, SPACE_AROUND, SPACE_EVENLY]
+        examples:
+          type: array
+          maxItems: 3
+          description: 填写示例，无示例时为空数组，过长条目省略。
+          items:
+            type: string
+            maxLength: 160
+          example: [START]
+        truncated:
+          type: boolean
+          default: false
+          description: 仅在部分名称、格式说明、候选或示例被裁剪或省略时返回 true。
+    ErrorPosition:
+      type: object
+      description: 未知分量省略；所有分量未知时省略整个 position。
+      properties:
+        offset:
+          type: integer
+          minimum: 0
+          description: 从 0 开始的 UTF-16 代码单元偏移。
+        line:
+          type: integer
+          minimum: 1
+          description: 从 1 开始的行号。
+        column:
+          type: integer
+          minimum: 1
+          description: 从 1 开始、按 UTF-16 代码单元计数的列号。

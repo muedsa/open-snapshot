@@ -1,7 +1,6 @@
 package com.muedsa.snapshot.open
 
 import com.muedsa.snapshot.parser.Element
-import com.muedsa.snapshot.parser.ParseException
 import com.muedsa.snapshot.parser.Parser
 import com.muedsa.snapshot.drawRenderBox
 import com.muedsa.snapshot.rendering.box.BoxConstraints
@@ -51,7 +50,7 @@ data class SnapshotResult(
 
 object SnapshotService {
     fun render(source: String, limits: RenderLimits = RenderLimits()): SnapshotResult {
-        require(source.isNotBlank()) { "Snapshot request body must not be empty" }
+        if (source.isBlank()) throw EmptySnapshotRequest()
         val imageBudget = ImageResourceBudget(limits.image.maxCount, limits.image.maxTotalPixels)
         val dataUriImageDecoder = LimitedDataUriImageDecoder(
             maxEncodedBytes = limits.image.maxEncodedBytes,
@@ -124,13 +123,6 @@ object SnapshotService {
     }
 
     fun formatError(error: Throwable, source: String): String {
-        if (error !is ParseException) {
-            return error.message ?: error::class.simpleName ?: "Snapshot rendering failed"
-        }
-        val position = error.pos.pos.coerceIn(0, source.length)
-        val start = (position - 30).coerceAtLeast(0)
-        val end = (position + 30).coerceAtMost(source.length)
-        return "${error.message ?: "Invalid snapshot document"} at position $position near: " +
-            source.substring(start, end)
+        return renderFailure(error, source, requestId = "").message
     }
 }

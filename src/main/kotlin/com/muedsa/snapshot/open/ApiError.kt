@@ -1,6 +1,10 @@
 package com.muedsa.snapshot.open
 
 import io.ktor.http.HttpStatusCode
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /** 对外错误码的唯一来源，OpenAPI 文档中的 `code` 枚举与之一致。 */
 internal object ErrorCodes {
@@ -46,21 +50,43 @@ data class ApiError(
     val message: String,
     val requestId: String,
     val status: HttpStatusCode,
+    val diagnostic: ApiAttributeDiagnostic? = null,
 )
 
-fun ApiError.toJson(): String = """
-    {"code":"${jsonEscape(code)}","message":"${jsonEscape(message)}","requestId":"${jsonEscape(requestId)}"}
-""".trimIndent()
+/** 对外 DTO 不包含原始属性值或异常链。未知位置不填，不用 0 冒充有效位置。 */
+data class ApiErrorPosition(val offset: Int? = null, val line: Int? = null, val column: Int? = null)
 
-private fun jsonEscape(value: String): String = buildString(value.length) {
-    value.forEach { char ->
-        when (char) {
-            '\\' -> append("\\\\")
-            '"' -> append("\\\"")
-            '\n' -> append("\\n")
-            '\r' -> append("\\r")
-            '\t' -> append("\\t")
-            else -> if (char.code < 0x20) append("\\u%04x".format(char.code)) else append(char)
-        }
+data class ApiAttributeDiagnostic(
+    val attributeName: String,
+    val valueState: String,
+    val elementName: String? = null,
+    val position: ApiErrorPosition? = null,
+    val format: String? = null,
+    val allowedValues: List<String> = emptyList(),
+    val examples: List<String> = emptyList(),
+    val truncated: Boolean = false,
+)
+
+fun ApiError.toJson(): String = buildJsonObject {
+    put("code", code)
+    put("message", message)
+    put("requestId", requestId)
+    diagnostic?.let { diagnostic ->
+        put("diagnostic", buildJsonObject {
+            put("attributeName", diagnostic.attributeName)
+            put("valueState", diagnostic.valueState)
+            diagnostic.elementName?.let { put("elementName", it) }
+            diagnostic.position?.let { position ->
+                put("position", buildJsonObject {
+                    position.offset?.let { put("offset", it) }
+                    position.line?.let { put("line", it) }
+                    position.column?.let { put("column", it) }
+                })
+            }
+            diagnostic.format?.let { put("format", it) }
+            put("allowedValues", JsonArray(diagnostic.allowedValues.map(::JsonPrimitive)))
+            put("examples", JsonArray(diagnostic.examples.map(::JsonPrimitive)))
+            if (diagnostic.truncated) put("truncated", true)
+        })
     }
-}
+}.toString()

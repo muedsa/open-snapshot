@@ -436,15 +436,15 @@ internal class LimitedNetworkImageCache(
         val uri = try {
             URI(url)
         } catch (error: Exception) {
-            throw ImageLoadException("Image URL is not a valid URI: $url", error)
+            throw ImageLoadException("Image URL is not a valid URI", error)
         }
         if (!uri.scheme.equals("http", ignoreCase = true) && !uri.scheme.equals("https", ignoreCase = true)) {
             throw ImageLoadException("Only http and https image URLs are allowed")
         }
         val host = uri.host?.takeIf(String::isNotBlank)
-            ?: throw ImageLoadException("Image URL must include a host: $url")
+            ?: throw ImageLoadException("Image URL must include a host")
         if (!allowPrivateHosts && isPrivateHost(host)) {
-            throw ImageLoadException("Private or local image hosts are not allowed: $host")
+            throw ImageLoadException("Private or local image hosts are not allowed")
         }
 
         val connection = try {
@@ -453,24 +453,24 @@ internal class LimitedNetworkImageCache(
                 readTimeout = readTimeoutMs
             }
         } catch (error: Exception) {
-            throw ImageLoadException("Failed to open image URL $url: ${error.message}", error, transient = true)
+            throw ImageLoadException("Failed to open image URL", error, transient = true)
         }
 
         return try {
             try {
-                downloadOnce(connection, url, etag)
+                downloadOnce(connection, etag)
             } catch (error: ImageLoadException) {
                 throw error
             } catch (error: Exception) {
                 // 连接建立后仍可能超时或中断（例如读取响应状态），统一视为瞬时故障以便重试。
-                throw ImageLoadException("Failed to load image from $url: ${error.message}", error, transient = true)
+                throw ImageLoadException("Failed to load image", error, transient = true)
             }
         } finally {
             (connection as? HttpURLConnection)?.disconnect()
         }
     }
 
-    private fun downloadOnce(connection: java.net.URLConnection, url: String, etag: String?): DownloadResult {
+    private fun downloadOnce(connection: java.net.URLConnection, etag: String?): DownloadResult {
         var responseEtag: String? = null
         if (connection is HttpURLConnection) {
             connection.instanceFollowRedirects = false
@@ -500,7 +500,7 @@ internal class LimitedNetworkImageCache(
                 LimitedImageInputStream(it, maxSingleImageSize).readBytes()
             }
         } catch (error: Exception) {
-            throw ImageLoadException("Failed to read image from $url: ${error.message}", error, transient = true)
+            throw ImageLoadException("Failed to read image", error, transient = true)
         }
         return DownloadResult.Downloaded(bytes, responseEtag)
     }

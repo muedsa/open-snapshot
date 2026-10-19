@@ -1,10 +1,19 @@
 package com.muedsa.snapshot
 
 import com.muedsa.snapshot.open.ErrorCodes
+import com.muedsa.snapshot.open.SnapshotService
+import com.muedsa.snapshot.open.renderFailure
+import com.muedsa.snapshot.open.toJson
+import com.muedsa.snapshot.parser.ParseException
 import io.ktor.server.config.yaml.YamlConfig
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -64,6 +73,22 @@ class OpenApiSpecTest {
             .toSet()
 
         assertEquals(ErrorCodes.ALL, documented)
+    }
+
+    @Test
+    fun `attribute diagnostic contract matches serialized parser errors`() {
+        val spec = assertNotNull(YamlConfig("docs/openapi.yaml"))
+        val schema = spec.config("components.schemas.AttributeDiagnostic")
+        val source = "<Snapshot><Row mainAxisAlignment=\"MIDDLE\"/></Snapshot>"
+        val error = assertFailsWith<ParseException> { SnapshotService.render(source) }
+        val json = Json.parseToJsonElement(renderFailure(error, source, "id").toJson()).jsonObject
+        val diagnostic = json.getValue("diagnostic").jsonObject
+        assertEquals(setOf("code", "message", "requestId"), spec.property("components.schemas.ApiError.required").getList().toSet())
+        assertTrue(diagnostic.keys.containsAll(schema.property("required").getList()))
+        assertTrue(diagnostic.getValue("valueState").jsonPrimitive.content in schema.property("properties.valueState.enum").getList())
+        assertTrue(diagnostic.getValue("format").jsonPrimitive.content.length <= schema.property("properties.format.maxLength").getString().toInt())
+        assertTrue(diagnostic.getValue("allowedValues").jsonArray.size <= schema.property("properties.allowedValues.maxItems").getString().toInt())
+        assertEquals("#/components/schemas/AttributeDiagnostic", spec.property("components.schemas.ApiError.properties.diagnostic.\$ref").getString())
     }
 
     @Test

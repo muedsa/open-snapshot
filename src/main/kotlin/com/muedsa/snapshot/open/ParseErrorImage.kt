@@ -259,7 +259,7 @@ internal fun drawParseErrorCard(
                 }
                 SizedBox(height = 10f)
                 Text(
-                    text = message.take(MAX_MESSAGE_LENGTH),
+                    text = boundedErrorCardText(message),
                     style = TextStyle(color = COLOR_MESSAGE, fontSize = 18f),
                 )
                 SizedBox(height = 4f)
@@ -271,8 +271,6 @@ internal fun drawParseErrorCard(
         }
     }
 }
-
-private const val MAX_MESSAGE_LENGTH = 300
 
 private fun gutter(lineNumber: Int?): String {
     val number = lineNumber?.toString().orEmpty().padStart(LINE_NUMBER_WIDTH)

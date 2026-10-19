@@ -139,6 +139,7 @@ class ParseErrorImageTest {
     @Test
     fun `error image is returned when requested`() = testApplication {
         configure()
+        val before = errorImageCount(client.get("/metrics").bodyAsText(), "served")
 
         val response = client.post("/snapshot?errorImage=png") {
             header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
@@ -153,7 +154,7 @@ class ParseErrorImageTest {
         assertPng(response.body())
 
         val metrics = client.get("/metrics").bodyAsText()
-        assertTrue(metrics.contains("""snapshot_error_images_total{result="served"} 1"""), metrics)
+        assertEquals(before + 1, errorImageCount(metrics, "served"), metrics)
     }
 
     @Test
@@ -188,6 +189,7 @@ class ParseErrorImageTest {
     @Test
     fun `unsupported error image format falls back to json`() = testApplication {
         configure()
+        val before = errorImageCount(client.get("/metrics").bodyAsText(), "unsupported")
 
         val response = client.post("/snapshot?errorImage=svg") {
             header(HttpHeaders.ContentType, ContentType.Text.Plain.toString())
@@ -199,7 +201,7 @@ class ParseErrorImageTest {
         assertTrue(response.bodyAsText().contains(ErrorCodes.PARSE_ERROR))
 
         val metrics = client.get("/metrics").bodyAsText()
-        assertTrue(metrics.contains("""snapshot_error_images_total{result="unsupported"} 1"""), metrics)
+        assertEquals(before + 1, errorImageCount(metrics, "unsupported"), metrics)
     }
 
     @Test
@@ -218,6 +220,7 @@ class ParseErrorImageTest {
     @Test
     fun `error image render failure falls back to the json error`() = testApplication {
         configure()
+        val before = errorImageCount(client.get("/metrics").bodyAsText(), "fallback")
         errorImageRenderer = { _, _, _ -> throw IllegalStateException("renderer unavailable") }
 
         try {
@@ -231,10 +234,15 @@ class ParseErrorImageTest {
             assertTrue(response.bodyAsText().contains(ErrorCodes.PARSE_ERROR))
 
             val metrics = client.get("/metrics").bodyAsText()
-            assertTrue(metrics.contains("""snapshot_error_images_total{result="fallback"} 1"""), metrics)
+            assertEquals(before + 1, errorImageCount(metrics, "fallback"), metrics)
         } finally {
             errorImageRenderer = ::drawParseErrorCard
         }
+    }
+
+    private fun errorImageCount(metrics: String, result: String): Long {
+        val prefix = "snapshot_error_images_total{result=\"$result\"} "
+        return metrics.lineSequence().firstOrNull { it.startsWith(prefix) }?.removePrefix(prefix)?.toLong() ?: 0L
     }
 
     private fun assertPng(bytes: ByteArray) {
