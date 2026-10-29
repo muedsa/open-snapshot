@@ -212,6 +212,10 @@ X-Snapshot-Image-Count: 2
 
 OpenAPI 的服务器地址使用相对路径 `/`，因此经 Nginx 以站点根路径发布时，导入工具会请求当前站点；若部署在子路径下，需相应调整文档中的 `servers`。
 
+AI 工具应先阅读当前服务的 `/ai-guide.md` 和 `/openapi.yaml`，了解请求/响应、鉴权、资源限制、字体与诊断约定，再通过 Snapshot 文档站的 [llms.txt 索引](https://snapshot.muedsa.com/llms.txt) 按任务读取单页 Markdown。需要完整的 Parser 上下文时使用 [DSL 专题合集](https://snapshot.muedsa.com/_llms-txt/dsl.txt)，无需默认加载全站合集；`llms-small.txt` 也不是短摘要。框架参考由文档站统一生成，服务只维护自身调用说明，不代理或重复打包整套框架文档。这些外部文档不受 `SNAPSHOT_PUBLIC_DOCS_ENABLED` 控制，访问时不应附带服务 API Key 或用户请求内容。
+
+`/snapshot` 接收 Parser 文本模板；Kotlin DSL 的参数名、默认值和颜色写法不能直接套用。文档站跟随 Snapshot 快照更新，不代表当前服务部署了同版本引擎；LSP/静态诊断也不能替代实际渲染验证。更新本仓库的两份文档后，需要重新构建并部署服务才能更新其公开内容，文档站上线不会自动替换 JAR 内的指南。
+
 ### 可选 API Key 鉴权
 
 默认情况下 `/snapshot` 开放调用，仅受限流保护。需要限制调用方时，配置任意一种凭据来源即可启用鉴权：

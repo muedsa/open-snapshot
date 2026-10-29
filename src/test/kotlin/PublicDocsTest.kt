@@ -16,6 +16,21 @@ import kotlin.test.assertTrue
 
 class PublicDocsTest {
     @Test
+    fun `guide links to task focused framework documentation`() {
+        val guide = File("docs/ai-guide.md").readText()
+        val links = Regex("""\]\((https://snapshot\.muedsa\.com/[^)]+)\)""")
+            .findAll(guide).map { it.groupValues[1] }.toSet()
+
+        for (path in listOf(
+            "llms.txt", "_llms-txt/dsl.txt", "_llms-txt/kotlin.txt", "llms-full.txt", "llms-small.txt",
+            "guides/parser.md", "reference/parser-tags.md", "reference/parser-text.md",
+            "reference/parser-errors.md", "guides/fonts.md", "guides/media-text.md",
+        )) {
+            assertTrue("https://snapshot.muedsa.com/$path" in links, "AI 指南缺少文档链接：$path")
+        }
+    }
+
+    @Test
     fun `public document routes are absent by default`() = testApplication {
         configure()
 

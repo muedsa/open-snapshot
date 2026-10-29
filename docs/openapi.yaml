@@ -17,10 +17,16 @@ info:
     - `/metrics` 可通过 `snapshot.metrics-access` 设置为 `open`（默认）、`credential` 或 `admin`；
       `/health`、`/ready` 始终开放。
     - `snapshot.public-docs-enabled=true` 时公开 `/openapi.yaml` 与 `/ai-guide.md`；否则返回 404。
+    - AI 工具先阅读同源 `/ai-guide.md` 与本接口契约，再从外部文档索引按需获取 Parser 参考。
+      框架文档不代表当前服务部署版本或资源配额；访问外部文档不应携带服务凭据。
   version: 1.0.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
+
+externalDocs:
+  description: Snapshot 框架 AI 文档索引；服务模板以 Parser 文档为准，Kotlin DSL 不可直接照搬。
+  url: https://snapshot.muedsa.com/llms.txt
 
 servers:
   - url: /
@@ -58,7 +64,10 @@ paths:
     get:
       tags: [docs]
       summary: 获取 AI 使用指南
-      description: 仅在 snapshot.public-docs-enabled=true 时注册；否则返回 404。
+      description: |
+        仅在 snapshot.public-docs-enabled=true 时注册；否则返回 404。
+        包含服务调用、资源限制、字体查询与错误处理说明，以及框架 AI 文档的按需阅读顺序。
+        指南随当前服务构建打包；外部文档站更新不代表此服务引擎已同步升级。
       responses:
         "200":
           description: Snapshot DSL 与渲染接口的精简 Markdown 使用指南。

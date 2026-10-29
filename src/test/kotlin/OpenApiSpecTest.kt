@@ -36,6 +36,12 @@ class OpenApiSpecTest {
     }
 
     @Test
+    fun `external documentation points to framework ai index`() {
+        val spec = assertNotNull(YamlConfig("docs/openapi.yaml"))
+        assertEquals("https://snapshot.muedsa.com/llms.txt", spec.property("externalDocs.url").getString())
+    }
+
+    @Test
     fun `documented paths match the public endpoints`() {
         val documented = Regex("""^ {2}(/[^\s:]*):\s*$""", RegexOption.MULTILINE)
             .findAll(specText)
