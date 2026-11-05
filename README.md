@@ -19,9 +19,9 @@ curl -X POST http://localhost:8080/snapshot `
 
 | 属性 | 说明 |
 |---|---|
-| `type` | 输出格式：`png`（默认）、`jpg`、`webp`，其他值会被解析器拒绝 |
+| `type` | 输出格式：`png`（默认）、`jpg`、`webp`，忽略首尾空白和大小写，其他值会被解析器拒绝 |
 | `background` | 画布背景色，支持 CSS 颜色语法；8 位十六进制为 `#RRGGBBAA` |
-| `debug` | 绘制布局辅助信息，默认 `false`，需显式写 `debug="true"` |
+| `debug` | 绘制布局辅助信息，默认 `false`；裸写 `debug` 或显式写 `debug="true"` 均启用 |
 
 画布尺寸由 DSL 内容布局决定，并受 `max-canvas-width`、`max-canvas-height`、`max-canvas-pixels` 限制。
 
@@ -51,7 +51,7 @@ curl -X POST http://localhost:8080/snapshot `
 ```
 
 `fit` 可选 `FILL`、`CONTAIN`、`COVER`、`FIT_WIDTH`、`FIT_HEIGHT`、`NONE`、`SCALE_DOWN`。
-`noCache="true"` 会跳过缓存，默认 `false`（布尔属性必须写出值，裸写属性会回落到默认值）。
+`<Image>` 的 `noCache` 默认 `false`；裸写 `noCache`、`noCache="true"` 或 `noCache=" TRUE "` 都会跳过渲染结果缓存和网络图片缓存。显式 `false` 允许缓存；空字符串和其他非法布尔值返回 `400 PARSE_ERROR`。`noCache` 仅适用于 `<Image url="...">`，不能用于 Data URI，也不要假定其他标签支持此属性。
 
 内嵌图片可使用 `dataUri`（PNG、JPEG、WebP），不能与 `url` 同时出现：
 
@@ -64,15 +64,23 @@ curl -X POST http://localhost:8080/snapshot `
 URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Data URI 还会在解码前检查 Base64
 长度，并校验声明 MIME 与实际文件签名，防止压缩图片或伪造格式造成内存放大。
 
-指定字体族，避免中文或 Emoji 缺字（多个字体用英文逗号分隔，且**不能带空格**）：
+指定字体族，避免中文或 Emoji 缺字（多个字体用英文逗号分隔，逐项去掉首尾空白；保留字体名内部空格、大小写和连字符，空项会报错）：
 
 ```html
 <Snapshot type="png">
-    <Text fontSize="24" fontFamily="Noto Serif SC,Noto Color Emoji">原神，启动！🤣</Text>
+    <Text fontSize="24" fontFamily="Noto Serif SC, Noto Color Emoji">原神，启动！🤣</Text>
 </Snapshot>
 ```
 
 更多标签与属性见 snapshot 框架的[使用说明](https://github.com/muedsa/snapshot)（`docs/usage`）。
+
+#### Parser 属性语法与迁移
+
+当前适配 2026-11-05 的属性语法更新：支持边距空白简写、坐标、椭圆圆角、变换函数、边框、阴影及列表简写。内置枚举忽略首尾空白和大小写，并支持连字符别名，例如 `space-between`；自由文本、URL、字体名和 OpenType 标签不会因此被统一转为小写。详细规则见 [AI 使用指南](docs/ai-guide.md#属性简写与兼容性) 和框架 Parser 文档。
+
+升级时注意：裸布尔属性现在表示 `true`，无效布尔文本不再静默变为 `false`；旧四值边距元组 `(左,上,右,下)` 保留顺序，新四值写法为 `上 右 下 左`，例如 `(1,2,3,4)` 对应 `2 3 4 1`。盒阴影 `0 2 red 4` 的 `4` 现在明确表示模糊半径，重复颜色/模式、负模糊值和字体列表空项会报错。
+
+依赖仍声明为滚动 `0.0.0-SNAPSHOT`，必须刷新到包含该变更的 Parser JAR；版本字符串本身不能证明已升级。`ParserSyntaxCompatibilityTest` 检查服务实际返回的新语法图片和结构化错误，缓存回归同时检查真实图片下载次数。发布前执行 `./gradlew --no-daemon --refresh-dependencies test shadowJar`，再重新构建并部署镜像。文档站或上游源码更新不会自动升级已运行的服务。
 
 #### 错误响应
 
@@ -105,14 +113,14 @@ URL 与 Data URI 共用每次渲染的图片数量和总解码像素预算。Dat
 ```json
 {
   "code": "PARSE_ERROR",
-  "message": "属性值无效 [mainAxisAlignment]，元素 <Row>\n格式：以下取值之一，区分大小写\n...",
+  "message": "属性值无效 [mainAxisAlignment]，元素 <Row>\n格式：以下枚举名称之一；忽略首尾空白和大小写，连字符可代替下划线\n...",
   "requestId": "...",
   "diagnostic": {
     "attributeName": "mainAxisAlignment",
     "elementName": "Row",
     "valueState": "present",
     "position": { "offset": 34, "line": 1, "column": 35 },
-    "format": "以下取值之一，区分大小写",
+    "format": "以下枚举名称之一；忽略首尾空白和大小写，连字符可代替下划线",
     "allowedValues": ["START", "END", "CENTER", "SPACE_BETWEEN", "SPACE_AROUND", "SPACE_EVENLY"],
     "examples": ["START"]
   }
@@ -605,7 +613,7 @@ curl "http://localhost:8080/fonts.png?offset=10&limit=10" --output fonts-page2.p
 - 键为 DSL 文本的 SHA-256；`render-cache.enabled` 可整体关闭；
 - 同时受 `max-entries` 与 `max-bytes` 约束，按 LRU 淘汰；
 - `ttl-ms` 到期后重新渲染：DSL 中引用的网络图片内容可能变化；
-- DSL 中出现 `noCache="true"` 时跳过缓存，尊重调用方要最新图片的意图；
+- `<Image>` 的 `noCache` 为真时跳过缓存，包括裸属性、`noCache="true"` 和 `noCache=" TRUE "`；依据 Parser 分词与布尔解析判断，正文和 URL 中的同名字样不影响缓存；
 - `POST /cacheClear` 会同时清空图片缓存与渲染结果缓存，`GET /cacheInfo` 返回两者的条目与字节数；
 - 命中情况见 `snapshot_render_cache_hits_total` / `_misses_total` / `_evictions_total` 与 `_entries` / `_bytes`。
 

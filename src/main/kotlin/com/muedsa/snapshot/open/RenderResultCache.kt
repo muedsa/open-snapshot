@@ -1,6 +1,10 @@
 package com.muedsa.snapshot.open
 
+import com.muedsa.snapshot.parser.attr.CommonAttrDefine
+import com.muedsa.snapshot.parser.token.Token
+import com.muedsa.snapshot.parser.token.Tokenizer
 import io.ktor.http.ContentType
+import java.io.StringReader
 
 /**
  * 渲染结果缓存：相同 DSL 的重复请求直接返回上一次的输出，跳过解析、布局与光栅化。
@@ -123,8 +127,31 @@ internal fun isRenderCacheEnabled(): Boolean = renderResultCache != null
 internal fun renderCacheKey(source: String): String = sha256Hex(source)
 
 /**
- * `noCache="true"` 表示调用方要求每次重新拉取图片，这类请求跳过结果缓存。
+ * 使用 Parser 的分词和布尔解析判断 Image.noCache，不构建 Widget 或加载图片。
+ * 裸属性、首尾空白、大小写和属性边界均与实际解析一致，正文和其他属性不参与判断。
+ * 扫描失败时放弃缓存复用，由正常渲染流程保留首个错误、元素上下文及结构化诊断。
  */
-private val NO_CACHE_ATTRIBUTE = Regex("""noCache\s*=\s*["']?true["']?""", RegexOption.IGNORE_CASE)
-
-internal fun bypassesRenderCache(source: String): Boolean = NO_CACHE_ATTRIBUTE.containsMatchIn(source)
+internal fun bypassesRenderCache(source: String): Boolean {
+    // 属性名区分大小写，分词器不解码属性名；通常请求不含此属性，避免额外完整分词。
+    if (!source.contains(CommonAttrDefine.NO_CACHE.name)) return false
+    return try {
+        StringReader(source).use { reader ->
+            val tokenizer = Tokenizer(reader)
+            var token: Token
+            do {
+                token = tokenizer.read()
+                if (token is Token.StartTag && token.tagName == "Image") {
+                    for (attribute in token.attrList) {
+                        if (attribute.name == CommonAttrDefine.NO_CACHE.name && CommonAttrDefine.NO_CACHE.parseValue(attribute)) {
+                            return@use true
+                        }
+                    }
+                }
+                token.reset()
+            } while (token !is Token.EOF)
+            false
+        }
+    } catch (_: Exception) {
+        true
+    }
+}

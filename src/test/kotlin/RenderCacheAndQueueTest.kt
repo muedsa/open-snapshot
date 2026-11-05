@@ -30,6 +30,7 @@ import java.net.InetSocketAddress
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -101,10 +102,32 @@ class RenderCacheAndQueueTest {
     @Test
     fun `noCache attribute bypasses the render cache`() {
         assertFalse(bypassesRenderCache(pngSource))
-        assertTrue(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" noCache="true"/></Snapshot>"""))
-        assertTrue(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" noCache='true'/></Snapshot>"""))
-        // 裸写属性回落到默认值 false，因此不需要绕过缓存。
-        assertFalse(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" noCache/></Snapshot>"""))
+        for (attribute in listOf("noCache", "noCache=\"true\"", "noCache=' TRUE '", "noCache=TrUe")) {
+            assertTrue(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" $attribute /></Snapshot>"""), attribute)
+        }
+        for (attribute in listOf("", "noCache=\"false\"", "noCache=' FaLsE '", "noCache=FALSE")) {
+            assertFalse(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" $attribute /></Snapshot>"""), attribute)
+        }
+    }
+
+    @Test
+    fun `cache decisions ignore attribute-like text and unrelated attributes`() {
+        for (source in listOf(
+            """<Snapshot><Text>noCache="true"</Text></Snapshot>""",
+            """<Snapshot><Text text='noCache="true"'/></Snapshot>""",
+            """<Snapshot><Image url="https://example.com/noCache=true.png"/></Snapshot>""",
+            """<Snapshot><Image url="https://example.com/a.png" othernoCache="true"/></Snapshot>""",
+            """<Snapshot><Image url="https://example.com/a.png" NOCACHE="true"/></Snapshot>""",
+            """<Snapshot><Container noCache="true" width="1" height="1"/></Snapshot>""",
+            """<Snapshot><Text><Emoji url="https://example.com/a.png" noCache="true"/></Text></Snapshot>""",
+        )) assertFalse(bypassesRenderCache(source), source)
+    }
+
+    @Test
+    fun `invalid image booleans cannot reuse cached renders`() {
+        for (attribute in listOf("noCache=\"\"", "noCache=\" \"", "noCache=\"yes\"", "noCache=\"true-extra\"", "noCache=\"&#x74;rue\"")) {
+            assertTrue(bypassesRenderCache("""<Snapshot><Image url="https://example.com/a.png" $attribute /></Snapshot>"""), attribute)
+        }
     }
 
     @Test
@@ -150,6 +173,37 @@ class RenderCacheAndQueueTest {
         val metrics = client.get("/metrics").bodyAsText()
         assertTrue(metrics.contains("snapshot_render_cache_entries 0"), metrics)
         assertTrue(metrics.contains("snapshot_render_cache_hits_total 0"), metrics)
+    }
+
+    @Test
+    fun `new noCache spellings reload images while false still permits cache hits`() = testApplication {
+        val downloads = AtomicInteger()
+        val imageServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val png = Base64.getDecoder().decode(PNG_1X1)
+        imageServer.createContext("/image.png") { exchange ->
+            downloads.incrementAndGet()
+            exchange.sendResponseHeaders(200, png.size.toLong())
+            exchange.responseBody.use { it.write(png) }
+        }
+        imageServer.start()
+        try {
+            configure(overrides = { put("snapshot.rate-limit.requests", "100") })
+            application { configureImageCache(allowPrivateHostsOverride = true) }
+            for ((index, attribute) in listOf("noCache", "noCache=' TRUE '", "noCache=TrUe", "noCache=' false '").withIndex()) {
+                val before = downloads.get()
+                val source = """<Snapshot><Image width="1" height="1" url="http://127.0.0.1:${imageServer.address.port}/image.png?case=$index" $attribute /></Snapshot>"""
+                repeat(2) { attempt ->
+                    val response = client.post("/snapshot") { setBody(source) }
+                    assertEquals(HttpStatusCode.OK, response.status, attribute)
+                    assertTrue(response.headers[HttpHeaders.ContentType].orEmpty().startsWith("image/png"))
+                    if (index < 3) assertNull(response.headers["X-Snapshot-Cache"], attribute)
+                    else assertEquals(if (attempt == 0) "miss" else "hit", response.headers["X-Snapshot-Cache"])
+                }
+                assertEquals(before + if (index < 3) 2 else 1, downloads.get(), attribute)
+            }
+        } finally {
+            imageServer.stop(0)
+        }
     }
 
     // ---------- 渲染队列背压 ----------

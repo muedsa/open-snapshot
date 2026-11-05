@@ -105,6 +105,10 @@ paths:
           snapshot DSL 文本，根标签为 `<Snapshot>`。`<Image>` 与 `<Emoji>` 可使用 HTTP(S) `url`
           或 PNG/JPEG/WebP Base64 `dataUri`（二选一）；两种来源共用图片数量、单图尺寸和
           单次渲染总解码像素限制。文档元素数量与嵌套深度也受服务端配置限制。
+          内置枚举忽略首尾空白和大小写、支持连字符别名；布尔裸属性表示 true，
+          显式 true/false 同样忽略首尾空白和大小写，空串或其他布尔文本返回属性错误。
+          `<Image url="...">` 的 noCache 为真时绕过网络图片及渲染结果缓存；Data URI 不允许此属性。
+          padding/margin 的新四值格式为上右下左，旧四值元组仍为左上右下，不能机械替换。
         content:
           text/plain:
             schema:
@@ -607,7 +611,7 @@ components:
           type: string
           maxLength: 512
           description: 期望格式；Parser 未提供时省略。
-          example: 以下取值之一，区分大小写
+          example: 以下枚举名称之一；忽略首尾空白和大小写，连字符可代替下划线
         allowedValues:
           type: array
           maxItems: 64

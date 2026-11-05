@@ -52,6 +52,27 @@ curl --fail-with-body -X POST "${SNAPSHOT_URL:-http://localhost:8080}/snapshot" 
 - `<Image>` 可使用 HTTP(S) `url` 或 `dataUri`，二者不能同时指定；远程图片和内嵌图片都受安全与资源限制。
 - 字体、标签和属性的完整说明通过上面的 AI 文档索引按需查阅；不要臆造未知属性。
 
+### 属性简写与兼容性
+
+本服务已适配 2026-11-05 的 Parser 属性语法。以下规则须以实际部署了新版 Parser 的实例为前提；不表示支持完整 CSS 语法。
+
+| 属性类型 | 示例与边界 |
+|---|---|
+| `padding` / `margin` | `8`、`8 16`、`1 2 3`、`1 2 3 4` 按 CSS 四边规则展开；旧 `(1,2,3,4)` 仍是左上右下，等价新 `2 3 4 1`，不能只删括号和逗号 |
+| 对齐与坐标 | 对齐可写 `center`，自定义坐标与 `Transform.origin` 可写 `1 2`、`1,2`、`(1,2)`；必须恰好两个有限数 |
+| 内置枚举和关键字 | 忽略首尾空白、大小写，连字符可代替下划线，例如 `space-between`、`bold-italic`；`Snapshot.type` 仍只允许 png/jpg/webp，`ClipPath.fit` 仍只允许 FILL/CONTAIN |
+| 字体列表 | `fontFamily="Arial, Noto Sans"` 和 `strutFontFamily` 逐项 trim，保留名称内部空白和大小写；空字符串、首尾逗号及连续逗号均报错 |
+| 椭圆圆角 | `borderRadius="12 / 6"` 表示水平半径 12、垂直半径 6；旧 `(12,6)` 仍支持，不支持裸 `12 6` 或 CSS 多角半径语法 |
+| 变换 | `Transform.matrix` / `Container.transform` 可写 `translate(12,8) rotate(30deg) scale(1.2)` 或 `none`；16 值列优先矩阵仍支持；旋转必须写 deg/rad，不支持 px/% |
+| 边框 | `border="2 red"` 默认实线，`2 solid red` 与 `none` 也可用；不接受任意顺序、px 或未支持的 dashed 样式 |
+| 简单列表 | `gradientStops="0 0.5 1"`、`decoration="underline line-through"` 支持空白或逗号分隔，同一列表不能混用；颜色列表仍按括号外逗号分隔 |
+| 阴影 | `boxShadow="0 2 red 4"` 与 `0 2 4 red` 相同，4 为 blurRadius；`textShadow` 的对应数值为 blurSigma，含义不同；重复颜色/模式和负模糊值报错，不支持 CSS inset |
+| 布尔值 | 未提供时保留默认值；裸属性为 true；显式 true/false 忽略首尾空白和大小写；空字符串、纯空白、yes、1、0 或拼写错误均返回属性诊断 |
+
+上述数值复合格式支持小数、正负号和科学计数法，要求有限数；不要据此推断所有单值数值属性都有同样约束。变换按书写顺序右乘：`translate(10,0) scale(2)` 将点 `(1,0)` 映射到 `(12,0)`，交换顺序则为 `(22,0)`。含空白的属性值应加引号。
+
+`<Image url="..." noCache>` 或 `noCache=" TRUE "` 都会重新获取网络图片并绕过渲染结果缓存；`noCache="false"` 允许缓存。它只适用于 `<Image>` 的 URL 来源，不能用于 Data URI，其他标签不因此获得该能力。迁移旧模板时，如依赖非法布尔值或裸属性得到 false，应改为显式 `false`。
+
 ## 资源限制
 
 请求体的 UTF-8 字节数、文档元素数量与嵌套深度、画布宽高与总像素、图片数量、单图编码大小与解码尺寸、单次渲染总图片像素均有上限。Data URI 也计入请求体大小，并与 URL 图片共用图片资源预算。远程图片只允许 HTTP(S)，默认拒绝本机、私网及其他受限地址。
@@ -68,7 +89,7 @@ curl --fail-with-body "${SNAPSHOT_URL:-http://localhost:8080}/fonts"
 
 需要凭据时，与渲染请求一样添加 `-H "X-API-Key: $SNAPSHOT_API_KEY"`，或使用 `Authorization: Bearer`。不要将密钥写入提示词。`/fonts` 不依赖本指南的公开开关，也不需要启用管理接口；若未授权，返回 401。
 
-从返回列表中选择字体族后，可在文本元素中写 `fontFamily="Noto Serif SC,Noto Color Emoji"`；多个名称用英文逗号分隔，名称本身要与 `/fonts` 返回值一致。如需查看字体效果，可调用 `GET /fonts.png`，使用 `family`、`offset`、`limit` 查询参数；每页默认 10 个，最多 20 个，同样占用渲染接口配额。`snapshot.font-family-names` 配置的是默认字体偏好，不等于系统全部已安装字体。若无法访问 `/fonts`，请让使用者提供可用字体列表，不要声称某种字体已安装。
+从返回列表中选择字体族后，可在文本元素中写 `fontFamily="Noto Serif SC, Noto Color Emoji"`；多个名称用英文逗号分隔，逐项去掉首尾空白后名称要与 `/fonts` 返回值一致，列表不能包含空项。如需查看字体效果，可调用 `GET /fonts.png`，使用 `family`、`offset`、`limit` 查询参数；每页默认 10 个，最多 20 个，同样占用渲染接口配额。`snapshot.font-family-names` 配置的是默认字体偏好，不等于系统全部已安装字体。若无法访问 `/fonts`，请让使用者提供可用字体列表，不要声称某种字体已安装。
 
 ## 错误处理
 
