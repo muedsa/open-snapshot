@@ -12,7 +12,7 @@ plugins {
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        maven("https://redirector.kotlinlang.org/maven/compose-dev")
         maven {
             url = uri("https://maven.pkg.github.com/muedsa/snapshot")
             credentials {
