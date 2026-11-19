@@ -218,7 +218,7 @@ X-Snapshot-Image-Count: 2
 
 设置 `snapshot.public-docs-enabled: true`，或在容器环境中设置 `SNAPSHOT_PUBLIC_DOCS_ENABLED=true`，即可通过服务自身的 `GET /openapi.yaml` 和 `GET /ai-guide.md` 获取 OpenAPI 定义与 [AI 使用指南](docs/ai-guide.md)。两个文档在构建时打包进 JAR，无需额外挂载；默认关闭时路由不注册并返回 404。开启后根路径 `/` 也会显示文档链接。公开文档仅包含静态说明，不包含运行时配置或密钥，且不改变 `/snapshot` 的鉴权和限流。
 
-OpenAPI 的服务器地址使用相对路径 `/`，因此经 Nginx 以站点根路径发布时，导入工具会请求当前站点；若部署在子路径下，需相应调整文档中的 `servers`。
+OpenAPI 的服务器地址使用相对路径 `/`，导入工具会请求当前站点的服务根路径；若部署在子路径下，需相应调整文档中的 `servers`。
 
 AI 工具应先阅读当前服务的 `/ai-guide.md` 和 `/openapi.yaml`，了解请求/响应、鉴权、资源限制、字体与诊断约定，再通过 Snapshot 文档站的 [llms.txt 索引](https://snapshot.muedsa.com/llms.txt) 按任务读取单页 Markdown。需要完整的 Parser 上下文时使用 [DSL 专题合集](https://snapshot.muedsa.com/_llms-txt/dsl.txt)，无需默认加载全站合集；`llms-small.txt` 也不是短摘要。框架参考由文档站统一生成，服务只维护自身调用说明，不代理或重复打包整套框架文档。这些外部文档不受 `SNAPSHOT_PUBLIC_DOCS_ENABLED` 控制，访问时不应附带服务 API Key 或用户请求内容。
 
@@ -552,7 +552,7 @@ IP 与匿名限流使用同一来源地址。默认取连接地址；同时开�
 
 路径标签收敛在固定集合内（未知路径记为 `/other`），不会因外部输入产生高基数。
 
-Prometheus 抓取示例（容器拓扑下走内部网络，Nginx 默认对公网返回 404）：
+Prometheus 抓取示例（Prometheus 与服务连接到同一 Docker 网络时，可使用服务名 `snapshot`；从宿主机访问时使用映射端口）：
 
 ```yaml
 scrape_configs:
@@ -640,19 +640,22 @@ printf '%s' 'YOUR_GITHUB_USERNAME' > .secrets/gpr_user
 printf '%s' 'YOUR_GITHUB_CLASSIC_PAT' > .secrets/gpr_key
 ```
 
-`.secrets` 已被 Docker 构建上下文和 Git 忽略，凭据不会复制到镜像层。启动服务和 Nginx 反代：
+`.secrets` 已被 Docker 构建上下文和 Git 忽略，凭据不会复制到镜像层。Compose 只启动 `snapshot` 服务，直接映射应用端口：
 
 ```bash
 docker compose up -d --build
 docker compose ps
-curl http://127.0.0.1/health
+curl http://127.0.0.1:8080/health
 ```
 
-默认监听宿主机 `80` 端口。需要改端口时：
+默认通过 `http://localhost:8080` 访问本服务。需要改宿主机端口时：
 
 ```bash
-HTTP_PORT=8080 docker compose up -d
+HTTP_PORT=9000 docker compose up -d
 ```
+
+此时访问 `http://localhost:9000`。`HTTP_PORT` 仅控制宿主机映射；容器内默认监听 `8080`。
+如果通过挂载的 YAML 修改容器监听端口，也需设置同值的 `SNAPSHOT_SERVER_PORT`，让 Compose 的端口映射和健康检查保持一致。
 
 ### 修改容器内配置
 
@@ -709,21 +712,11 @@ SNAPSHOT_IMAGE_MAX_RETRIES=2
 
 配置优先级为：非空环境变量 > 绑定挂载的 YAML > 镜像内默认 YAML。CORS 域名、字体族与 `api-keys` 列表属于列表配置，建议直接修改挂载的 YAML。`SNAPSHOT_ADMIN_TOKEN`、`SNAPSHOT_API_KEY` 与 `SNAPSHOT_API_KEYS` 由应用直接读取环境变量，不会被转换为 JVM 命令行参数，因此不会出现在容器的进程列表里；其余标量配置由 `docker/entrypoint.sh` 转换为 `-P:` 覆盖参数。GitHub PAT 等构建秘密不要写入 `.env` 或 YAML，仍然使用 `.secrets` 中的 BuildKit secret。
 
-容器拓扑为 `Internet -> Nginx -> open-snapshot:8080`，应用端口不会直接暴露到宿主机。Nginx 默认包含：
-
-- 1 MiB 请求体限制；
-- 每个客户端 IP 每分钟 6 个请求，允许瞬时突发 3 个；
-- 35 秒上游读取超时；
-- `X-Forwarded-*` 与 `X-Request-Id` 请求头；
-- `/health` 与 `/ready` 探针转发（均不写访问日志）；
-- `/metrics` 对公网返回 404，仅供内部网络抓取。
+请求会通过宿主机映射端口直接到达应用，请求体大小、限流与渲染超时由应用配置控制。
+`/health`、`/ready` 和 `/metrics` 同样直接访问应用；`/metrics` 默认开放，若需凭据访问，设置 `SNAPSHOT_METRICS_ACCESS=credential` 或 `admin`。
 
 容器停机时 Docker 先发送 `SIGTERM`，Compose 通过 `stop_grace_period: 30s`
 为应用的排水窗口留出时间；Kubernetes 部署时请相应设置 `terminationGracePeriodSeconds`。
-
-应用及 Compose 默认不信任转发头，因此默认日志与匿名限流按 Nginx 连接 IP 计。若需区分客户端，先确认反代连接到应用时的实际 IP，设置 `SNAPSHOT_TRUST_PROXY_HEADERS=true` 和 `SNAPSHOT_TRUSTED_PROXY_CIDRS=<代理IP>/32`（IPv6 为 `/128`）；多级反代可用逗号分隔的精确网段。Docker 容器 IP 可能重建后变化，需为代理固定 IP 或重新核对配置。不要把整个 Docker 私网或 `0.0.0.0/0` 设为可信；也不要将应用端口直接暴露给不可信网络。Nginx 会覆盖客户端提供的 `X-Forwarded-For`，而应用会从实际 TCP 对端反向校验可信链。头缺失、畸形或过长时回退到连接 IP；旧版直接信任最左侧 XFF 的行为已移除。
-
-生产环境建议在 Nginx 前或 Nginx 内配置 TLS。若由云负载均衡器或 CDN 终止 TLS，当前配置可以直接作为内部 HTTP 反代使用。
 
 ### GitHub Actions 发布镜像
 
